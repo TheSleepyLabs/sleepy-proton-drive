@@ -564,7 +564,7 @@ class ConfigManager:
             "# ==============================================================================",
             "# The Sleepy Labs // Sleepy Proton Drive configuration",
             "# Written by sleepy-proton-gui. This is a Bash file.",
-            "# Options explained: https://github.com/DeathTheLoner/sleepy-proton-drive#configuration",
+            "# Options explained: https://github.com/TheSleepyLabs/sleepy-proton-drive#configuration",
             "# ==============================================================================",
             "",
             f"REMOTE_NAME={bash_dq(self.remote_name)}",

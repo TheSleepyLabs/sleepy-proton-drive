@@ -130,8 +130,8 @@ DEVICE_NAME="${DEVICE_NAME//\//-}"
 expand_path() {
     local p="$1"
     case "$p" in
-        "~") p="$HOME" ;;
-        "~/"*) p="$HOME/${p#\~/}" ;;
+        \~) p="$HOME" ;;
+        \~/*) p="$HOME/${p#\~/}" ;;
     esac
     printf '%s' "$p"
 }

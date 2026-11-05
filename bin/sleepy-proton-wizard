@@ -159,7 +159,7 @@ fi
 
 if [[ "$KEEP_LOGIN" == "false" ]]; then
     echo -e "${CLR_DIM}Your login is passed straight to rclone on this computer and saved in"
-    echo -e "~/.config/rclone/rclone.conf. Sleepy Proton Drive never sends it anywhere else.${CLR_RESET}\n"
+    echo -e '~'"/.config/rclone/rclone.conf. Sleepy Proton Drive never sends it anywhere else.${CLR_RESET}\n"
 
     while true; do
         ask "Proton email or username"

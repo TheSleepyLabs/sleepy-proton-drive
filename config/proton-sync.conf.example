@@ -1,0 +1,62 @@
+# ==============================================================================
+# The Sleepy Labs // Sleepy Proton Drive - Configuration
+# ==============================================================================
+# Location: ~/.config/proton-sync.conf
+# Read by sleepy-proton-sync, sleepy-proton-wizard and sleepy-proton-gui.
+# This is a Bash file: keep the quotes and brackets as they are.
+# The wizard and the GUI rewrite this file when you save, so comments you add
+# here may be removed.
+# ==============================================================================
+
+# Name of the rclone remote the wizard created.
+REMOTE_NAME="protondrive"
+
+# Name of this computer in Proton Drive. Files go to:
+#   Devices/<DEVICE_NAME>/<folder name>/
+# Leave empty to use this computer's hostname.
+DEVICE_NAME=""
+
+# Folders to back up. $HOME and a leading ~ are expanded.
+# Each folder is stored under its own name, so two folders can't share a name.
+SYNC_DIRS=(
+    "$HOME/Documents"
+    "$HOME/Pictures"
+)
+
+# How to sync:
+#   "copy"   - SAFEST (recommended). Uploads new and changed files.
+#              Deleting a file on this computer does NOT delete it in Proton Drive.
+#   "sync"   - Mirror. Proton Drive is made to match this computer exactly.
+#              Deleting a file here DELETES it in Proton Drive too.
+#   "bisync" - Two-way. Changes on either side are copied to the other,
+#              including deletions. The first run sets a baseline automatically.
+SYNC_MODE="copy"
+
+# Desktop notifications when a sync finishes (needs notify-send).
+NOTIFY=true
+
+# Log file and how many lines to keep.
+LOG_FILE="$HOME/.local/share/proton-sync.log"
+LOG_MAX_LINES=5000
+
+# Extra rclone options. See https://rclone.org/flags/ and
+# https://rclone.org/filtering/ for what these do.
+RCLONE_FLAGS=(
+    "--verbose"
+    "--stats-one-line"
+    "--stats=30s"
+    "--transfers=4"
+    "--checkers=8"
+    "--tpslimit=10"
+    "--skip-links"
+    "--exclude" ".git/**"
+    "--exclude" "node_modules/**"
+    "--exclude" ".venv/**"
+    "--exclude" "venv/**"
+    "--exclude" "__pycache__/**"
+    "--exclude" ".cache/**"
+    "--exclude" "*.tmp"
+    "--exclude" "*.crdownload"
+    "--exclude" "*.part"
+)
+# Upload speed limit example (add inside the brackets above): "--bwlimit=10M"

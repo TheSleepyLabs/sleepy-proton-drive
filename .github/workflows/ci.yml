@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning -e SC1090,SC1091,SC2034 \
+            check-requirements.sh install.sh uninstall.sh tests/smoke-test.sh \
+            bin/sleepy-proton-sync bin/sleepy-proton-wizard
+
+      - name: Bash syntax
+        run: for f in check-requirements.sh install.sh uninstall.sh bin/sleepy-proton-sync bin/sleepy-proton-wizard config/proton-sync.conf.example; do bash -n "$f"; done
+
+      - name: Python syntax
+        run: python3 -m py_compile bin/sleepy-proton-gui
+
+      - name: Desktop entry
+        run: |
+          sudo apt-get install -y -qq desktop-file-utils
+          desktop-file-validate assets/sleepy-proton-drive.desktop
+
+      - name: Executable bits
+        run: |
+          for f in check-requirements.sh install.sh uninstall.sh tests/smoke-test.sh \
+                   bin/sleepy-proton-sync bin/sleepy-proton-wizard bin/sleepy-proton-gui; do
+            test -x "$f" || { echo "$f is not executable"; exit 1; }
+          done
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rclone
+        run: curl -fsSL https://rclone.org/install.sh | sudo bash
+
+      - name: Sync engine smoke test (local fake remote, no Proton account)
+        run: bash tests/smoke-test.sh
+
+      - name: Installer / uninstaller round trip
+        run: |
+          ./install.sh --no-deps </dev/null
+          test -x "$HOME/.local/bin/sleepy-proton-sync"
+          "$HOME/.local/bin/sleepy-proton-sync" --version
+          ./uninstall.sh --purge
+          test ! -e "$HOME/.local/bin/sleepy-proton-sync"

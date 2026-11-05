@@ -1,0 +1,1998 @@
+#!/usr/bin/env python3
+"""
+==============================================================================
+The Sleepy Labs // Sleepy Proton Drive GUI & Setup Wizard
+==============================================================================
+Responsive, adaptive Proton Drive sync manager and onboarding wizard for Linux.
+Crafted under The Sleepy Labs Cosmic Cyber Dark design system with full DPI,
+flexible layout scaling, and scrollable responsive containers.
+==============================================================================
+"""
+
+import os
+import re
+import sys
+import shlex
+import shutil
+import subprocess
+from pathlib import Path
+
+APP_VERSION = "1.1.0"
+VENV_PYTHON = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "sleepy-proton-drive" / "venv" / "bin" / "python"
+
+try:
+    from PySide6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QGridLayout, QLabel, QPushButton, QListWidget, QListWidgetItem,
+        QFileDialog, QTabWidget, QGroupBox, QRadioButton,
+        QLineEdit, QTextEdit, QMessageBox, QStatusBar, QInputDialog,
+        QFrame, QDialog, QStackedWidget, QCheckBox, QSpinBox, QSlider,
+        QComboBox, QScrollArea, QSizePolicy
+    )
+    from PySide6.QtCore import Qt, QProcess, QTimer, QProcessEnvironment
+    from PySide6.QtGui import QIcon, QColor
+except ImportError:
+    # PySide6 may live in the private environment made by "sleepy-proton-check --fix".
+    if VENV_PYTHON.exists() and Path(sys.executable).resolve() != VENV_PYTHON.resolve() \
+            and not os.environ.get("SLEEPY_PROTON_REEXEC"):
+        os.environ["SLEEPY_PROTON_REEXEC"] = "1"
+        os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), os.path.abspath(__file__), *sys.argv[1:]])
+    sys.stderr.write(
+        "Sleepy Proton Drive: the GUI needs PySide6, which isn't installed.\n"
+        "Fix it with:   sleepy-proton-check --fix     (or ./check-requirements.sh --fix)\n"
+        "The terminal tools work without it: sleepy-proton-wizard, sleepy-proton-sync\n"
+    )
+    if shutil.which("notify-send"):
+        subprocess.run(["notify-send", "Sleepy Proton Drive",
+                        "The GUI needs PySide6. Run: sleepy-proton-check --fix"], check=False)
+    sys.exit(1)
+
+# Paths
+CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+CONFIG_PATH = Path(os.environ.get("PROTON_SYNC_CONFIG", CONFIG_HOME / "proton-sync.conf"))
+DEFAULT_LOG_PATH = Path.home() / ".local" / "share" / "proton-sync.log"
+BIN_DIR = Path(__file__).resolve().parent
+ICON_CANDIDATES = [
+    BIN_DIR.parent / "assets" / "sleepy-proton-drive.svg",
+    Path.home() / ".local" / "share" / "icons" / "hicolor" / "scalable" / "apps" / "sleepy-proton-drive.svg",
+]
+SYNC_SCRIPT = BIN_DIR / "sleepy-proton-sync"
+CHECK_SCRIPT = BIN_DIR / "sleepy-proton-check"
+if not CHECK_SCRIPT.exists():
+    CHECK_SCRIPT = BIN_DIR.parent / "check-requirements.sh"
+if not SYNC_SCRIPT.exists():
+    SYNC_SCRIPT = Path.home() / ".local" / "bin" / "sleepy-proton-sync"
+
+TIMER_INTERVALS = ["15min", "30min", "1h", "2h", "1d"]
+DEFAULT_EXCLUDES = [
+    ".git/**", "node_modules/**", ".venv/**", "venv/**",
+    "__pycache__/**", ".cache/**", "*.tmp", "*.crdownload", "*.part",
+]
+DEFAULT_OTHER_FLAGS = ["--verbose", "--stats-one-line", "--stats=30s", "--tpslimit=10", "--skip-links"]
+
+
+def have_rclone() -> bool:
+    return shutil.which("rclone") is not None
+
+
+def run_quiet(cmd, timeout=30, **kw):
+    """subprocess.run that never raises (missing program, timeout)."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(cmd, 127, "", str(e))
+
+
+def rclone_remotes():
+    if not have_rclone():
+        return []
+    return [r.strip()[:-1] for r in run_quiet(["rclone", "listremotes"]).stdout.splitlines() if r.strip().endswith(":")]
+
+
+def timer_status():
+    """Returns (active: bool, interval: str)."""
+    res = run_quiet([str(SYNC_SCRIPT), "--config", str(CONFIG_PATH), "--timer-status"])
+    parts = res.stdout.split()
+    if parts and parts[0] == "active":
+        return True, (parts[1] if len(parts) > 1 else "")
+    return False, ""
+
+
+def bash_dq(value: str) -> str:
+    """Quote a string for a double-quoted Bash word."""
+    for a, b in (("\\", "\\\\"), ('"', '\\"'), ("$", "\\$"), ("`", "\\`")):
+        value = value.replace(a, b)
+    return f'"{value}"'
+
+
+def bash_path(path: str) -> str:
+    """Like bash_dq, but writes paths inside the home folder as "$HOME/..."."""
+    home = str(Path.home())
+    if path == home:
+        return '"$HOME"'
+    if path.startswith(home + "/"):
+        return '"$HOME' + bash_dq(path[len(home):])[1:]
+    return bash_dq(path)
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+# The Sleepy Labs Cosmic Cyber Dark Enhanced Stylesheet
+SLEEPY_STYLESHEET = """
+QMainWindow, QDialog {
+    background-color: #07050d;
+    color: #f3ecff;
+}
+
+QWidget {
+    font-family: "Segoe UI", "Inter", "Ubuntu", "DejaVu Sans", sans-serif;
+    color: #f3ecff;
+}
+
+/* Scroll Areas */
+QScrollArea {
+    background: transparent;
+    border: none;
+}
+
+QScrollArea > QWidget > QWidget {
+    background: transparent;
+}
+
+/* Tabs */
+QTabWidget::pane {
+    border: 1px solid #1e1938;
+    background-color: #110d22;
+    border-radius: 12px;
+    padding: 10px;
+}
+
+QTabBar::tab {
+    background-color: #0a0816;
+    color: #9d8ec2;
+    padding: 11px 22px;
+    margin-right: 6px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    font-weight: 700;
+    font-size: 13px;
+    border: 1px solid #1e1938;
+    border-bottom: none;
+    min-height: 22px;
+}
+
+QTabBar::tab:selected {
+    background-color: #191433;
+    color: #38bdf8;
+    border-bottom: 3px solid #8b5cf6;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: #141029;
+    color: #f3ecff;
+}
+
+/* Cards (selected by objectName so styles don't leak into child labels) */
+QFrame#card, QFrame#statCard {
+    background-color: #141028;
+    border: 1px solid #231c44;
+    border-radius: 10px;
+}
+QFrame#statCard:hover {
+    border: 1px solid #38bdf8;
+}
+QFrame#cardSuccess {
+    background-color: #110d22;
+    border: 1px solid #10b981;
+    border-radius: 8px;
+}
+
+/* Groups */
+QGroupBox {
+    border: 1px solid #231c44;
+    border-radius: 10px;
+    margin-top: 18px;
+    padding: 18px 14px 14px 14px;
+    font-weight: 700;
+    font-size: 13px;
+    color: #b794ff;
+    background-color: #141028;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 2px 10px;
+    left: 14px;
+    background-color: #1b1538;
+    border: 1px solid #2a2254;
+    border-radius: 6px;
+    color: #38bdf8;
+}
+
+/* Buttons */
+QPushButton {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1b1638, stop:1 #271f4c);
+    color: #f3ecff;
+    border: 1px solid #8b5cf6;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-weight: 600;
+    font-size: 13px;
+    min-height: 24px;
+}
+
+QPushButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #282054, stop:1 #3e307c);
+    border: 1px solid #b794ff;
+    color: #ffffff;
+}
+
+QPushButton:pressed {
+    background-color: #141028;
+    border-color: #ec4899;
+}
+
+QPushButton:disabled {
+    background-color: #0d0a1a;
+    border-color: #1e1938;
+    color: #5d5475;
+}
+
+QPushButton#btnPrimary {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8b5cf6, stop:1 #38bdf8);
+    color: #ffffff;
+    border: none;
+    font-weight: 700;
+    font-size: 13px;
+    padding: 10px 22px;
+}
+
+QPushButton#btnPrimary:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #9d75f8, stop:1 #5ed0fa);
+}
+
+QPushButton#btnSecondary {
+    background: #141028;
+    border: 1px solid #38bdf8;
+    color: #38bdf8;
+}
+
+QPushButton#btnSecondary:hover {
+    background: #1f1b3e;
+    color: #ffffff;
+    border-color: #67e8f9;
+}
+
+QPushButton#btnDanger {
+    background: #2b0e1d;
+    color: #f43f5e;
+    border: 1px solid #f43f5e;
+}
+
+QPushButton#btnDanger:hover {
+    background: #4a142e;
+    color: #ffffff;
+    border-color: #fb7185;
+}
+
+/* Inputs */
+QLineEdit, QSpinBox, QComboBox {
+    background-color: #0b0918;
+    border: 1px solid #231c44;
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: #f3ecff;
+    font-size: 13px;
+    selection-background-color: #8b5cf6;
+    min-height: 22px;
+}
+
+QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
+    border: 1px solid #38bdf8;
+    background-color: #141028;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 28px;
+    border-left: 1px solid #231c44;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #141028;
+    color: #f3ecff;
+    selection-background-color: #231c44;
+    selection-color: #38bdf8;
+    border: 1px solid #8b5cf6;
+    border-radius: 6px;
+    padding: 4px;
+}
+
+/* Sliders */
+QSlider::groove:horizontal {
+    height: 6px;
+    background: #1e1938;
+    border-radius: 3px;
+}
+
+QSlider::sub-page:horizontal {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8b5cf6, stop:1 #38bdf8);
+    border-radius: 3px;
+}
+
+QSlider::handle:horizontal {
+    background: #f3ecff;
+    border: 2px solid #8b5cf6;
+    width: 18px;
+    margin-top: -6px;
+    margin-bottom: -6px;
+    border-radius: 9px;
+}
+
+QSlider::handle:horizontal:hover {
+    background: #38bdf8;
+    border-color: #ffffff;
+}
+
+/* Lists */
+QListWidget {
+    background-color: #0b0918;
+    border: 1px solid #231c44;
+    border-radius: 8px;
+    padding: 6px;
+    color: #f3ecff;
+    font-size: 13px;
+}
+
+QListWidget::item {
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin-bottom: 3px;
+}
+
+QListWidget::item:selected {
+    background-color: #1e1938;
+    color: #38bdf8;
+    border-left: 3px solid #8b5cf6;
+}
+
+QListWidget::item:hover:!selected {
+    background-color: #16122d;
+}
+
+/* Terminal / Text Edit */
+QTextEdit {
+    background-color: #07050d;
+    border: 1px solid #231c44;
+    border-radius: 8px;
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 12px;
+    color: #d1c7eb;
+    padding: 10px;
+    line-height: 1.4;
+}
+
+/* Radios & Checkboxes */
+QRadioButton, QCheckBox {
+    spacing: 10px;
+    color: #f3ecff;
+    font-size: 13px;
+}
+
+QRadioButton::indicator, QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border: 1px solid #8b5cf6;
+    border-radius: 5px;
+    background: #0b0918;
+}
+
+QRadioButton::indicator:checked, QCheckBox::indicator:checked {
+    background: #8b5cf6;
+    border: 1px solid #38bdf8;
+}
+
+QRadioButton::indicator:hover, QCheckBox::indicator:hover {
+    border-color: #b794ff;
+}
+
+/* Scrollbars */
+QScrollBar:vertical {
+    border: none;
+    background: #07050d;
+    width: 8px;
+    margin: 0px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:vertical {
+    background: #28214a;
+    min-height: 24px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #8b5cf6;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QScrollBar:horizontal {
+    border: none;
+    background: #07050d;
+    height: 8px;
+    margin: 0px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:horizontal {
+    background: #28214a;
+    min-width: 24px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: #8b5cf6;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+
+QStatusBar {
+    background-color: #0a0816;
+    color: #9d8ec2;
+    border-top: 1px solid #1e1938;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+"""
+
+
+def create_scrollable_container(content_widget: QWidget) -> QScrollArea:
+    """Wraps any content widget into a smooth, borderless QScrollArea for adaptive resizing."""
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    scroll.setWidget(content_widget)
+    return scroll
+
+
+# Bash snippet that loads the config exactly like the sync engine does and prints
+# the values NUL-separated, so the GUI never has to guess at Bash syntax.
+_DUMP_CONFIG = r"""
+REMOTE_NAME=protondrive; DEVICE_NAME=""; SYNC_MODE=copy; NOTIFY=true
+LOG_FILE="$HOME/.local/share/proton-sync.log"; LOG_MAX_LINES=5000
+SYNC_DIRS=(); RCLONE_FLAGS=()
+source "$1" >/dev/null 2>&1 || exit 3
+printf '%s\0' "$REMOTE_NAME" "$DEVICE_NAME" "$SYNC_MODE" "$NOTIFY" "$LOG_FILE" "$LOG_MAX_LINES"
+printf '%s\0' "${#SYNC_DIRS[@]}" "${SYNC_DIRS[@]}"
+printf '%s\0' "${#RCLONE_FLAGS[@]}" "${RCLONE_FLAGS[@]}"
+"""
+
+
+class ConfigManager:
+    """Loads and saves ~/.config/proton-sync.conf (a small Bash file)."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.load_error = ""
+        self.set_defaults()
+        self.load()
+
+    def set_defaults(self):
+        self.remote_name = "protondrive"
+        self.device_name = os.uname().nodename
+        self.sync_dirs = [str(Path.home() / "Documents"), str(Path.home() / "Pictures")]
+        self.sync_mode = "copy"
+        self.notify = True
+        self.log_file = str(DEFAULT_LOG_PATH)
+        self.log_max_lines = 5000
+        self.transfers = 4
+        self.checkers = 8
+        self.bwlimit = ""
+        self.excludes = list(DEFAULT_EXCLUDES)
+        self.other_flags = list(DEFAULT_OTHER_FLAGS)
+
+    @property
+    def log_path(self) -> Path:
+        return Path(self.log_file)
+
+    def load(self):
+        self.load_error = ""
+        if not self.path.exists():
+            return
+        res = run_quiet(["bash", "-c", _DUMP_CONFIG, "_", str(self.path)], timeout=10)
+        if res.returncode != 0:
+            self.load_error = f"Couldn't read {self.path} (is it valid Bash?). Defaults are shown."
+            return
+        vals = res.stdout.split("\0")
+        try:
+            (self.remote_name, device, self.sync_mode, notify, self.log_file, max_lines) = vals[:6]
+            idx = 6
+            n_dirs = int(vals[idx]); idx += 1
+            dirs = vals[idx:idx + n_dirs]; idx += n_dirs
+            n_flags = int(vals[idx]); idx += 1
+            flags = vals[idx:idx + n_flags]
+        except (ValueError, IndexError):
+            self.load_error = f"Couldn't understand {self.path}. Defaults are shown."
+            self.set_defaults()
+            return
+
+        self.remote_name = self.remote_name or "protondrive"
+        self.device_name = device.strip() or os.uname().nodename
+        if self.sync_mode not in ("copy", "sync", "bisync"):
+            self.sync_mode = "copy"
+        self.notify = notify.strip().lower() == "true"
+        self.log_file = self.log_file or str(DEFAULT_LOG_PATH)
+        try:
+            self.log_max_lines = int(max_lines)
+        except ValueError:
+            self.log_max_lines = 5000
+        self.sync_dirs = [os.path.expanduser(d).rstrip("/") or "/" for d in dirs]
+
+        self.excludes, self.other_flags, self.bwlimit = [], [], ""
+        i = 0
+        while i < len(flags):
+            t = flags[i]
+            if t == "--exclude" and i + 1 < len(flags):
+                self.excludes.append(flags[i + 1]); i += 2; continue
+            if t.startswith("--exclude="):
+                self.excludes.append(t.split("=", 1)[1])
+            elif t.startswith("--transfers="):
+                self.transfers = int(t.split("=", 1)[1]) if t.split("=", 1)[1].isdigit() else self.transfers
+            elif t.startswith("--checkers="):
+                self.checkers = int(t.split("=", 1)[1]) if t.split("=", 1)[1].isdigit() else self.checkers
+            elif t.startswith("--bwlimit="):
+                self.bwlimit = t.split("=", 1)[1]
+            elif t in ("--include", "--filter", "--filter-from", "--exclude-from", "--include-from") and i + 1 < len(flags):
+                self.other_flags += [t, flags[i + 1]]; i += 2; continue
+            else:
+                self.other_flags.append(t)
+            i += 1
+
+    def save(self):
+        """Writes the config atomically and keeps a .bak of the previous one."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "# ==============================================================================",
+            "# The Sleepy Labs // Sleepy Proton Drive configuration",
+            "# Written by sleepy-proton-gui. This is a Bash file.",
+            "# Options explained: https://github.com/DeathTheLoner/sleepy-proton-drive#configuration",
+            "# ==============================================================================",
+            "",
+            f"REMOTE_NAME={bash_dq(self.remote_name)}",
+            f"DEVICE_NAME={bash_dq(self.device_name.replace('/', '-'))}",
+            "",
+            "SYNC_DIRS=(",
+            *[f"    {bash_path(d)}" for d in self.sync_dirs],
+            ")",
+            "",
+            "# copy = safest (never deletes in Proton) | sync = mirror | bisync = two-way",
+            f"SYNC_MODE={bash_dq(self.sync_mode)}",
+            f"NOTIFY={'true' if self.notify else 'false'}",
+            f"LOG_FILE={bash_path(self.log_file)}",
+            f"LOG_MAX_LINES={int(self.log_max_lines)}",
+            "",
+            "RCLONE_FLAGS=(",
+            f'    "--transfers={int(self.transfers)}"',
+            f'    "--checkers={int(self.checkers)}"',
+        ]
+        if self.bwlimit:
+            lines.append(f"    {bash_dq('--bwlimit=' + self.bwlimit)}")
+        i = 0
+        while i < len(self.other_flags):
+            f = self.other_flags[i]
+            if f.startswith(("--transfers", "--checkers", "--bwlimit")):
+                i += 1; continue
+            if f in ("--include", "--filter", "--filter-from", "--exclude-from", "--include-from") and i + 1 < len(self.other_flags):
+                lines.append(f"    {bash_dq(f)} {bash_dq(self.other_flags[i + 1])}"); i += 2; continue
+            lines.append(f"    {bash_dq(f)}"); i += 1
+        for exc in self.excludes:
+            lines.append(f'    "--exclude" {bash_dq(exc)}')
+        lines += [")", ""]
+
+        text = "\n".join(lines)
+        check = run_quiet(["bash", "-n"], input=text, timeout=10)
+        if check.returncode not in (0, 127):
+            raise RuntimeError(f"Refusing to save an invalid config:\n{check.stderr}")
+        if self.path.exists():
+            try:
+                shutil.copy2(self.path, self.path.with_name(self.path.name + ".bak"))
+            except OSError:
+                pass
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, self.path)
+
+
+class SetupWizardDialog(QDialog):
+    """Adaptive, scrollable multi-step onboarding wizard for Proton Drive."""
+    def __init__(self, parent=None, config=None):
+        super().__init__(parent)
+        self.config = config or ConfigManager(CONFIG_PATH)
+        self.setWindowTitle("The Sleepy Labs // Proton Drive Setup Wizard")
+        
+        # Responsive sizing
+        screen = QApplication.primaryScreen()
+        screen_geo = screen.availableGeometry() if screen else None
+        target_w = min(820, int(screen_geo.width() * 0.7)) if screen_geo else 800
+        target_h = min(680, int(screen_geo.height() * 0.8)) if screen_geo else 650
+        self.resize(target_w, target_h)
+        self.setMinimumSize(680, 520)
+        self.setStyleSheet(SLEEPY_STYLESHEET)
+
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(18, 16, 18, 16)
+        self.main_layout.setSpacing(12)
+
+        # Header Banner
+        header = QFrame()
+        header.setObjectName("card")
+        h_layout = QHBoxLayout(header)
+        h_layout.setContentsMargins(16, 10, 16, 10)
+
+        v_head = QVBoxLayout()
+        h_title = QLabel("★ PROTON DRIVE ONBOARDING WIZARD")
+        h_title.setStyleSheet("font-size: 16px; font-weight: 800; color: #38bdf8; letter-spacing: 0.5px;")
+        self.h_desc = QLabel("Step 1: Authenticate and securely bind your Proton Drive account")
+        self.h_desc.setStyleSheet("font-size: 12px; color: #9d8ec2;")
+        v_head.addWidget(h_title)
+        v_head.addWidget(self.h_desc)
+        h_layout.addLayout(v_head)
+        h_layout.addStretch()
+
+        self.step_label = QLabel("Step 1 of 4")
+        self.step_label.setStyleSheet("color: #b794ff; font-weight: 700; font-size: 13px; background: #1f183d; padding: 6px 12px; border-radius: 6px; border: 1px solid #3d306b;")
+        h_layout.addWidget(self.step_label)
+        self.main_layout.addWidget(header)
+
+        # Stacked Pages
+        self.stack = QStackedWidget()
+        self.main_layout.addWidget(self.stack, 1)
+
+        self.create_page_account()
+        self.create_page_folders()
+        self.create_page_sync_settings()
+        self.create_page_automation()
+
+        # Bottom Navigation Bar
+        btn_bar = QHBoxLayout()
+        btn_bar.setContentsMargins(4, 8, 4, 4)
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+
+        self.btn_back = QPushButton("← Back")
+        self.btn_back.clicked.connect(self.prev_page)
+        self.btn_back.setEnabled(False)
+
+        self.btn_next = QPushButton("Next Step →")
+        self.btn_next.setObjectName("btnPrimary")
+        self.btn_next.clicked.connect(self.next_page)
+
+        btn_bar.addWidget(self.btn_cancel)
+        btn_bar.addStretch()
+        btn_bar.addWidget(self.btn_back)
+        btn_bar.addWidget(self.btn_next)
+        self.main_layout.addLayout(btn_bar)
+
+    def create_page_account(self):
+        page_widget = QWidget()
+        layout = QVBoxLayout(page_widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(14)
+
+        lbl_desc = QLabel(
+            "Log in to Proton Drive. Your login is handed to rclone on this computer and saved in\n"
+            "~/.config/rclone/rclone.conf. Sleepy Proton Drive never sends it anywhere else."
+        )
+        lbl_desc.setStyleSheet("color: #9d8ec2; line-height: 1.4;")
+        layout.addWidget(lbl_desc)
+
+        grp = QGroupBox("Proton Account Credentials")
+        g_layout = QVBoxLayout(grp)
+        g_layout.setSpacing(10)
+
+        g_layout.addWidget(QLabel("Proton Email or Username:"))
+        self.wizard_user = QLineEdit()
+        self.wizard_user.setPlaceholderText("e.g. username@pm.me or username")
+        g_layout.addWidget(self.wizard_user)
+
+        g_layout.addWidget(QLabel("Proton Password:"))
+        pass_layout = QHBoxLayout()
+        self.wizard_pass = QLineEdit()
+        self.wizard_pass.setEchoMode(QLineEdit.Password)
+        self.wizard_pass.setPlaceholderText("Enter your account password")
+        self.btn_toggle_pass = QPushButton("👁 Show")
+        self.btn_toggle_pass.setFixedWidth(96)
+        self.btn_toggle_pass.clicked.connect(self.toggle_password_visibility)
+        pass_layout.addWidget(self.wizard_pass)
+        pass_layout.addWidget(self.btn_toggle_pass)
+        g_layout.addLayout(pass_layout)
+
+        g_layout.addWidget(QLabel("2FA code (6 digits from your authenticator app; leave blank if you don't use 2FA):"))
+        self.wizard_2fa = QLineEdit()
+        self.wizard_2fa.setPlaceholderText("e.g. 123456 (type it just before you click Log In)")
+        self.wizard_2fa.setMaxLength(8)
+        g_layout.addWidget(self.wizard_2fa)
+
+        self.chk_two_pass = QCheckBox("Account uses Two-Password Mode (separate Mailbox Password)")
+        self.chk_two_pass.toggled.connect(self.toggle_mailbox_field)
+        g_layout.addWidget(self.chk_two_pass)
+
+        self.box_mailbox = QWidget()
+        mb_layout = QVBoxLayout(self.box_mailbox)
+        mb_layout.setContentsMargins(0, 0, 0, 0)
+        mb_layout.addWidget(QLabel("Mailbox Password:"))
+        self.wizard_mailbox_pass = QLineEdit()
+        self.wizard_mailbox_pass.setEchoMode(QLineEdit.Password)
+        self.wizard_mailbox_pass.setPlaceholderText("Enter legacy mailbox password")
+        mb_layout.addWidget(self.wizard_mailbox_pass)
+        self.box_mailbox.hide()
+        g_layout.addWidget(self.box_mailbox)
+
+        self.chk_otp_secret = QCheckBox("Save my 2FA secret key so rclone can log in again by itself (optional, less secure)")
+        self.chk_otp_secret.toggled.connect(lambda c: self.wizard_otp_secret.setVisible(c))
+        g_layout.addWidget(self.chk_otp_secret)
+        self.wizard_otp_secret = QLineEdit()
+        self.wizard_otp_secret.setEchoMode(QLineEdit.Password)
+        self.wizard_otp_secret.setPlaceholderText("Base32 secret key shown when you set up 2FA")
+        self.wizard_otp_secret.hide()
+        g_layout.addWidget(self.wizard_otp_secret)
+
+        layout.addWidget(grp)
+
+        # Connection Test Action
+        h_action = QHBoxLayout()
+        self.btn_test_conn = QPushButton("⚡ Log In && Test")
+        self.btn_test_conn.setObjectName("btnSecondary")
+        self.btn_test_conn.clicked.connect(self.authenticate_rclone)
+        self.lbl_auth_status = QLabel("Not logged in yet")
+        self.lbl_auth_status.setWordWrap(True)
+        self.auth_ok = False
+        self.auth_proc = None
+        self.lbl_auth_status.setStyleSheet("color: #9d8ec2; font-style: italic;")
+        h_action.addWidget(self.btn_test_conn)
+        h_action.addWidget(self.lbl_auth_status)
+        h_action.addStretch()
+        layout.addLayout(h_action, 0)
+        layout.addStretch()
+
+        self.stack.addWidget(create_scrollable_container(page_widget))
+        QTimer.singleShot(0, self.check_existing_login)
+
+    def set_auth_status(self, text, color, bold=False):
+        self.lbl_auth_status.setText(text)
+        self.lbl_auth_status.setStyleSheet(f"color: {color};" + (" font-weight: bold;" if bold else " font-style: italic;"))
+
+    def check_existing_login(self):
+        if not have_rclone():
+            self.set_auth_status("✗ rclone is not installed. Close this and click 🩺 Diagnostics, or run: sleepy-proton-check --fix", "#ec4899", True)
+            self.btn_test_conn.setEnabled(False)
+            return
+        if self.config.remote_name in rclone_remotes():
+            self.set_auth_status(f"Checking your existing login ('{self.config.remote_name}')...", "#38bdf8")
+            self.run_login_test()
+
+    def toggle_password_visibility(self):
+        if self.wizard_pass.echoMode() == QLineEdit.Password:
+            self.wizard_pass.setEchoMode(QLineEdit.Normal)
+            self.btn_toggle_pass.setText("🔒 Hide")
+        else:
+            self.wizard_pass.setEchoMode(QLineEdit.Password)
+            self.btn_toggle_pass.setText("👁 Show")
+
+    def toggle_mailbox_field(self, checked):
+        self.box_mailbox.setVisible(checked)
+
+    def authenticate_rclone(self):
+        user = self.wizard_user.text().strip()
+        pwd = self.wizard_pass.text()
+        totp = self.wizard_2fa.text().replace(" ", "")
+        mailbox_pwd = self.wizard_mailbox_pass.text() if self.chk_two_pass.isChecked() else ""
+        otp_secret = self.wizard_otp_secret.text().replace(" ", "") if self.chk_otp_secret.isChecked() else ""
+
+        if not have_rclone():
+            QMessageBox.critical(self, "rclone missing", "rclone is not installed.\nRun: sleepy-proton-check --fix")
+            return
+        if not user or not pwd:
+            QMessageBox.warning(self, "Missing details", "Please enter your Proton email/username and password.")
+            return
+        if totp and not totp.isdigit():
+            QMessageBox.warning(self, "2FA code", "The 2FA code should be numbers only.")
+            return
+
+        def obscure(secret):
+            return run_quiet(["rclone", "obscure", "-"], input=secret, timeout=15).stdout.strip()
+
+        # Secrets are obscured first so they never show up in plain text in the process list.
+        args = ["config", "create", self.config.remote_name, "protondrive", "--no-obscure",
+                "username", user, "password", obscure(pwd)]
+        if mailbox_pwd:
+            args += ["mailbox_password", obscure(mailbox_pwd)]
+        if otp_secret:
+            args += ["otp_secret_key", obscure(otp_secret)]
+        if totp:
+            args += ["2fa", totp]
+
+        self.set_auth_status("⏳ Logging in to Proton (can take up to a minute)...", "#38bdf8")
+        self.btn_test_conn.setEnabled(False)
+        self.btn_next.setEnabled(False)
+        self.auth_proc = QProcess(self)
+        self.auth_proc.setProcessChannelMode(QProcess.MergedChannels)
+        self.auth_proc.finished.connect(self.on_login_created)
+        self.auth_proc.start("rclone", args)
+        self.wizard_pass.clear()
+        self.wizard_2fa.clear()
+
+    def on_login_created(self, code, _status):
+        output = bytes(self.auth_proc.readAll()).decode("utf-8", "ignore")
+        if code != 0:
+            self.btn_test_conn.setEnabled(True)
+            self.btn_next.setEnabled(True)
+            self.set_auth_status("✗ Login failed. Check your password / 2FA code and try again.", "#ec4899", True)
+            safe = "\n".join(l for l in output.splitlines()[-8:] if not re.search(r"password|otp|token|salted", l, re.I))
+            QMessageBox.critical(self, "Login failed", f"rclone couldn't log in:\n\n{safe or 'No details given.'}")
+            return
+        self.set_auth_status("⏳ Logged in. Testing access to your Drive...", "#38bdf8")
+        self.run_login_test()
+
+    def run_login_test(self):
+        self.btn_test_conn.setEnabled(False)
+        self.test_proc = QProcess(self)
+        self.test_proc.setProcessChannelMode(QProcess.MergedChannels)
+        self.test_proc.finished.connect(self.on_login_tested)
+        self.test_proc.start("rclone", ["lsd", f"{self.config.remote_name}:", "--contimeout", "15s", "--timeout", "60s"])
+        QTimer.singleShot(90_000, lambda: self.test_proc.state() != QProcess.NotRunning and self.test_proc.kill())
+
+    def on_login_tested(self, code, _status):
+        self.btn_test_conn.setEnabled(True)
+        self.btn_next.setEnabled(True)
+        if code == 0:
+            self.auth_ok = True
+            self.set_auth_status(f"✓ Logged in to Proton Drive (remote '{self.config.remote_name}'). Click Next.", "#10b981", True)
+        else:
+            self.auth_ok = False
+            self.set_auth_status("✗ Couldn't open your Drive. Log in again below.", "#ec4899", True)
+
+    def create_page_folders(self):
+        page_widget = QWidget()
+        layout = QVBoxLayout(page_widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
+
+        lbl = QLabel("Select local workstation directories to synchronize with Proton Drive:")
+        lbl.setStyleSheet("color: #b794ff; font-weight: bold; font-size: 13px;")
+        layout.addWidget(lbl)
+
+        # Standard preset checklist
+        grp_presets = QGroupBox("Quick Add Standard Directories")
+        p_layout = QGridLayout(grp_presets)
+        p_layout.setSpacing(10)
+
+        self.preset_checks = {}
+        standard_dirs = [
+            ("Documents", str(Path.home() / "Documents")),
+            ("Pictures", str(Path.home() / "Pictures")),
+            ("Desktop", str(Path.home() / "Desktop")),
+            ("Downloads", str(Path.home() / "Downloads")),
+            ("Music", str(Path.home() / "Music")),
+            ("Videos", str(Path.home() / "Videos")),
+        ]
+
+        for idx, (name, path) in enumerate(standard_dirs):
+            chk = QCheckBox(f"{name} ({path})")
+            chk.setChecked(path in self.config.sync_dirs)
+            chk.toggled.connect(self.sync_preset_toggled)
+            self.preset_checks[path] = chk
+            row, col = divmod(idx, 2)
+            p_layout.addWidget(chk, row, col)
+
+        layout.addWidget(grp_presets)
+
+        layout.addWidget(QLabel("Active Synced Folders List:"))
+        self.folders_list_wizard = QListWidget()
+        self.folders_list_wizard.setMinimumHeight(120)
+        for folder in self.config.sync_dirs:
+            self.folders_list_wizard.addItem(folder)
+        layout.addWidget(self.folders_list_wizard, 1)
+
+        h_btns = QHBoxLayout()
+        btn_add = QPushButton("+ Add Custom Folder...")
+        btn_add.clicked.connect(self.wizard_add_folder)
+        btn_rem = QPushButton("- Remove Selected")
+        btn_rem.clicked.connect(self.wizard_rem_folder)
+        h_btns.addWidget(btn_add)
+        h_btns.addWidget(btn_rem)
+        h_btns.addStretch()
+        layout.addLayout(h_btns)
+
+        self.stack.addWidget(create_scrollable_container(page_widget))
+
+    def sync_preset_toggled(self):
+        current_in_list = [self.folders_list_wizard.item(i).text() for i in range(self.folders_list_wizard.count())]
+        for path, chk in self.preset_checks.items():
+            if chk.isChecked() and path not in current_in_list:
+                self.folders_list_wizard.addItem(path)
+            elif not chk.isChecked() and path in current_in_list:
+                for i in range(self.folders_list_wizard.count()):
+                    if self.folders_list_wizard.item(i).text() == path:
+                        self.folders_list_wizard.takeItem(i)
+                        break
+
+    def wizard_add_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder to Sync", str(Path.home()))
+        if folder:
+            folder = folder.rstrip("/") or "/"
+            existing = [self.folders_list_wizard.item(i).text() for i in range(self.folders_list_wizard.count())]
+            clash = [d for d in existing if Path(d).name == Path(folder).name and d != folder]
+            if clash:
+                QMessageBox.warning(self, "Same folder name",
+                                    f"'{clash[0]}' has the same name, and both would go to the same cloud folder.")
+                return
+            if folder not in existing:
+                self.folders_list_wizard.addItem(folder)
+                if folder in self.preset_checks:
+                    self.preset_checks[folder].setChecked(True)
+
+    def wizard_rem_folder(self):
+        row = self.folders_list_wizard.currentRow()
+        if row >= 0:
+            item = self.folders_list_wizard.takeItem(row)
+            if item.text() in self.preset_checks:
+                self.preset_checks[item.text()].setChecked(False)
+
+    def create_page_sync_settings(self):
+        page_widget = QWidget()
+        layout = QVBoxLayout(page_widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(14)
+
+        grp_device = QGroupBox("Device Identification on Proton Drive")
+        d_layout = QVBoxLayout(grp_device)
+        d_layout.addWidget(QLabel("Device Name (Cloud destination path: protondrive:Devices/<DeviceName>/...):"))
+        self.wizard_device = QLineEdit(self.config.device_name)
+        self.wizard_device.setPlaceholderText("e.g. Laptop, Desktop, Work-PC")
+        d_layout.addWidget(self.wizard_device)
+        layout.addWidget(grp_device)
+
+        grp_mode = QGroupBox("Synchronization Strategy")
+        m_layout = QVBoxLayout(grp_mode)
+        m_layout.setSpacing(8)
+
+        self.w_radio_copy = QRadioButton("Copy Mode [SAFEST / Recommended]\nOne-way upload. Local deletions NEVER delete files on Proton Drive.")
+        self.w_radio_sync = QRadioButton("Sync Mode [Exact Mirror]\nExact mirror. Files deleted locally WILL be removed on Proton Drive.")
+        self.w_radio_bisync = QRadioButton("BiSync Mode [Two-Way]\nFull bidirectional sync between local workstation and Proton Drive.")
+
+        if self.config.sync_mode == "sync":
+            self.w_radio_sync.setChecked(True)
+        elif self.config.sync_mode == "bisync":
+            self.w_radio_bisync.setChecked(True)
+        else:
+            self.w_radio_copy.setChecked(True)
+
+        m_layout.addWidget(self.w_radio_copy)
+        m_layout.addWidget(self.w_radio_sync)
+        m_layout.addWidget(self.w_radio_bisync)
+        layout.addWidget(grp_mode)
+
+        grp_perf = QGroupBox("Transfer Concurrency")
+        p_layout = QGridLayout(grp_perf)
+        p_layout.setSpacing(10)
+
+        p_layout.addWidget(QLabel("Parallel Transfers:"), 0, 0)
+        self.w_spin_trans = QSpinBox()
+        self.w_spin_trans.setRange(1, 16)
+        self.w_spin_trans.setValue(self.config.transfers)
+        p_layout.addWidget(self.w_spin_trans, 0, 1)
+
+        p_layout.addWidget(QLabel("Checker Threads:"), 0, 2)
+        self.w_spin_check = QSpinBox()
+        self.w_spin_check.setRange(1, 32)
+        self.w_spin_check.setValue(self.config.checkers)
+        p_layout.addWidget(self.w_spin_check, 0, 3)
+
+        layout.addWidget(grp_perf)
+        layout.addStretch()
+
+        self.stack.addWidget(create_scrollable_container(page_widget))
+
+    def create_page_automation(self):
+        page_widget = QWidget()
+        layout = QVBoxLayout(page_widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(14)
+
+        grp_auto = QGroupBox("Background Automation (systemd user timer)")
+        a_layout = QVBoxLayout(grp_auto)
+        a_layout.setSpacing(12)
+
+        active, current_interval = timer_status()
+        self.w_chk_timer = QCheckBox("Sync automatically in the background")
+        self.w_chk_timer.setChecked(active or not CONFIG_PATH.exists())
+        a_layout.addWidget(self.w_chk_timer)
+
+        h_int = QHBoxLayout()
+        h_int.addWidget(QLabel("Scheduled Interval:"))
+        self.w_combo_interval = QComboBox()
+        self.w_combo_interval.addItems(TIMER_INTERVALS)
+        self.w_combo_interval.setCurrentText(current_interval if current_interval in TIMER_INTERVALS else "30min")
+        h_int.addWidget(self.w_combo_interval)
+        h_int.addStretch()
+        a_layout.addLayout(h_int)
+
+        self.w_chk_notify = QCheckBox("Show a desktop notification when a sync finishes")
+        self.w_chk_notify.setChecked(self.config.notify)
+        a_layout.addWidget(self.w_chk_notify)
+        layout.addWidget(grp_auto)
+
+        card_finish = QFrame()
+        card_finish.setObjectName("cardSuccess")
+        cf_layout = QVBoxLayout(card_finish)
+        cf_layout.setContentsMargins(14, 12, 14, 12)
+        lbl_ready = QLabel("★ All settings ready to deploy!")
+        lbl_ready.setStyleSheet("color: #10b981; font-weight: 800; font-size: 14px;")
+        lbl_sub = QLabel(
+            "Click 'Complete Setup' to save your settings and (if ticked) turn on background syncing. "
+            "Tip: use 🔍 Dry-Run Preview first to see what will be uploaded."
+        )
+        lbl_sub.setStyleSheet("color: #d1c7eb; font-size: 12px; line-height: 1.4;")
+        lbl_sub.setWordWrap(True)
+        cf_layout.addWidget(lbl_ready)
+        cf_layout.addWidget(lbl_sub)
+        layout.addWidget(card_finish)
+
+        layout.addStretch()
+        self.stack.addWidget(create_scrollable_container(page_widget))
+
+    def next_page(self):
+        idx = self.stack.currentIndex()
+        if idx == 0 and not self.auth_ok:
+            reply = QMessageBox.question(
+                self, "Not logged in",
+                "You haven't logged in to Proton Drive yet, so syncing won't work.\n\nContinue anyway?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply != QMessageBox.Yes:
+                return
+        if idx == self.stack.count() - 1:
+            self.finish_wizard()
+        else:
+            self.stack.setCurrentIndex(idx + 1)
+            self.update_nav()
+
+    def prev_page(self):
+        idx = self.stack.currentIndex()
+        if idx > 0:
+            self.stack.setCurrentIndex(idx - 1)
+            self.update_nav()
+
+    def update_nav(self):
+        idx = self.stack.currentIndex()
+        count = self.stack.count()
+        self.step_label.setText(f"Step {idx + 1} of {count}")
+        self.btn_back.setEnabled(idx > 0)
+
+        step_descriptions = [
+            "Step 1: Authenticate and securely bind your Proton Drive account",
+            "Step 2: Choose directories to mirror into Proton Drive",
+            "Step 3: Configure sync strategy, device naming, and concurrency",
+            "Step 4: Enable automated background timers and notifications"
+        ]
+        if idx < len(step_descriptions):
+            self.h_desc.setText(step_descriptions[idx])
+
+        if idx == count - 1:
+            self.btn_next.setText("Complete Setup ★")
+        else:
+            self.btn_next.setText("Next Step →")
+
+    def finish_wizard(self):
+        dirs = [self.folders_list_wizard.item(i).text() for i in range(self.folders_list_wizard.count())]
+        self.config.sync_dirs = dirs
+        self.config.device_name = self.wizard_device.text().strip().replace("/", "-") or os.uname().nodename
+
+        if self.w_radio_sync.isChecked():
+            self.config.sync_mode = "sync"
+        elif self.w_radio_bisync.isChecked():
+            self.config.sync_mode = "bisync"
+        else:
+            self.config.sync_mode = "copy"
+
+        self.config.transfers = self.w_spin_trans.value()
+        self.config.checkers = self.w_spin_check.value()
+        self.config.notify = self.w_chk_notify.isChecked()
+        try:
+            self.config.save()
+        except (OSError, RuntimeError) as e:
+            QMessageBox.critical(self, "Couldn't save", f"Your settings couldn't be saved:\n{e}")
+            return
+
+        ok, msg = set_timer(self.w_chk_timer.isChecked(), self.w_combo_interval.currentText())
+        if not ok:
+            QMessageBox.warning(self, "Background sync", f"Settings saved, but the background timer couldn't be set:\n{msg}")
+        self.accept()
+
+
+def set_timer(enabled: bool, interval: str = "30min"):
+    """Turns the systemd user timer on/off through the sync engine. Returns (ok, message)."""
+    if enabled:
+        cmd = [str(SYNC_SCRIPT), "--config", str(CONFIG_PATH), "--enable-timer", interval]
+    else:
+        cmd = [str(SYNC_SCRIPT), "--config", str(CONFIG_PATH), "--disable-timer"]
+    res = run_quiet(cmd, timeout=30)
+    return res.returncode == 0, (res.stdout + res.stderr).strip()
+
+
+class MainWindow(QMainWindow):
+    """Primary Application Window for The Sleepy Labs Proton Drive Manager."""
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Sleepy Proton Drive // The Sleepy Labs")
+
+        # Dynamic, adaptive screen geometry
+        screen = QApplication.primaryScreen()
+        screen_geo = screen.availableGeometry() if screen else None
+        target_w = min(1080, int(screen_geo.width() * 0.75)) if screen_geo else 960
+        target_h = min(760, int(screen_geo.height() * 0.82)) if screen_geo else 680
+        self.resize(target_w, target_h)
+        self.setMinimumSize(780, 520)
+        self.setStyleSheet(SLEEPY_STYLESHEET)
+
+        # Set Window Icon
+        icon = next((p for p in ICON_CANDIDATES if p.exists()), None)
+        self.setWindowIcon(QIcon(str(icon)) if icon else QIcon.fromTheme("sleepy-proton-drive"))
+
+        self.config = ConfigManager(CONFIG_PATH)
+        self.process = None
+        self.diag_proc = None
+        self._log_mtime = None
+
+        # Build Main UI
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        self.main_layout = QVBoxLayout(central_widget)
+        self.main_layout.setContentsMargins(14, 12, 14, 8)
+        self.main_layout.setSpacing(10)
+
+        self.build_header()
+        self.build_tabs()
+        self.update_timer_status()
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage(f"Sleepy Proton Drive v{APP_VERSION} ready.", 4000)
+
+        # Background log checker
+        self.log_timer = QTimer(self)
+        self.log_timer.setInterval(3000)
+        self.log_timer.timeout.connect(self.auto_refresh_log)
+        self.log_timer.start()
+
+        # First start: offer the wizard (or open it straight away with --wizard)
+        if "--wizard" in sys.argv:
+            QTimer.singleShot(300, self.open_setup_wizard)
+        else:
+            QTimer.singleShot(400, self.check_first_run)
+
+    def check_first_run(self):
+        if self.config.load_error:
+            QMessageBox.warning(self, "Config problem", self.config.load_error)
+        if not have_rclone():
+            QMessageBox.warning(
+                self, "rclone is missing",
+                "Sleepy Proton Drive uses rclone to talk to Proton Drive, and it isn't installed.\n\n"
+                "Open a terminal and run:\n    sleepy-proton-check --fix\n\n"
+                "Then start this app again.")
+            return
+        if self.config.remote_name not in rclone_remotes():
+            reply = QMessageBox.question(
+                self, "Welcome to Sleepy Proton Drive",
+                "You're not logged in to Proton Drive yet.\n\nOpen the setup wizard now?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self.open_setup_wizard()
+
+    def build_header(self):
+        header_card = QFrame()
+        header_card.setObjectName("card")
+        h_layout = QHBoxLayout(header_card)
+        h_layout.setContentsMargins(16, 10, 16, 10)
+
+        # Brand Title
+        v_title = QVBoxLayout()
+        v_title.setSpacing(2)
+        title_label = QLabel("★ SLEEPY PROTON DRIVE")
+        title_label.setStyleSheet("font-size: 16px; font-weight: 800; color: #8b5cf6; letter-spacing: 0.8px;")
+        sub_label = QLabel(f"by The Sleepy Labs  ·  automatic backups to Proton Drive  ·  v{APP_VERSION}")
+        sub_label.setStyleSheet("font-size: 11px; color: #9d8ec2;")
+        v_title.addWidget(title_label)
+        v_title.addWidget(sub_label)
+        h_layout.addLayout(v_title)
+
+        h_layout.addStretch()
+
+        # Quick Actions
+        self.btn_wizard = QPushButton("⚙ Account Wizard")
+        self.btn_wizard.setObjectName("btnSecondary")
+        self.btn_wizard.clicked.connect(self.open_setup_wizard)
+        h_layout.addWidget(self.btn_wizard)
+
+        self.btn_diag = QPushButton("🩺 Diagnostics")
+        self.btn_diag.clicked.connect(self.run_diagnostics)
+        h_layout.addWidget(self.btn_diag)
+
+        self.main_layout.addWidget(header_card)
+
+    def build_tabs(self):
+        self.tabs = QTabWidget()
+        self.main_layout.addWidget(self.tabs, 1)
+
+        self.setup_tab_overview()
+        self.setup_tab_folders()
+        self.setup_tab_settings()
+        self.setup_tab_automation()
+        self.setup_tab_logs()
+
+    # --------------------------------------------------------------------------
+    # Tab 1: Overview & Control Dashboard
+    # --------------------------------------------------------------------------
+    def setup_tab_overview(self):
+        tab_widget = QWidget()
+        layout = QVBoxLayout(tab_widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
+
+        # Telemetry Card Grid (Adaptive 4-column layout)
+        grid_container = QWidget()
+        g_layout = QGridLayout(grid_container)
+        g_layout.setContentsMargins(0, 0, 0, 0)
+        g_layout.setSpacing(10)
+
+
+        # Card 1: Remote
+        card1 = QFrame()
+        card1.setObjectName("statCard")
+        c1 = QVBoxLayout(card1)
+        c1.setContentsMargins(14, 10, 14, 10)
+        lbl_c1_title = QLabel("REMOTE ACCOUNT")
+        lbl_c1_title.setStyleSheet("font-size: 11px; color: #9d8ec2; font-weight: 700; letter-spacing: 0.5px;")
+        self.lbl_stat_remote = QLabel(f"● {self.config.remote_name}:")
+        self.lbl_stat_remote.setStyleSheet("color: #38bdf8; font-weight: 800; font-size: 14px;")
+        c1.addWidget(lbl_c1_title)
+        c1.addWidget(self.lbl_stat_remote)
+        g_layout.addWidget(card1, 0, 0)
+
+        # Card 2: Device
+        card2 = QFrame()
+        card2.setObjectName("statCard")
+        c2 = QVBoxLayout(card2)
+        c2.setContentsMargins(14, 10, 14, 10)
+        lbl_c2_title = QLabel("DEVICE TARGET")
+        lbl_c2_title.setStyleSheet("font-size: 11px; color: #9d8ec2; font-weight: 700; letter-spacing: 0.5px;")
+        self.lbl_stat_device = QLabel(self.config.device_name)
+        self.lbl_stat_device.setStyleSheet("color: #b794ff; font-weight: 800; font-size: 14px;")
+        c2.addWidget(lbl_c2_title)
+        c2.addWidget(self.lbl_stat_device)
+        g_layout.addWidget(card2, 0, 1)
+
+        # Card 3: Mode
+        card3 = QFrame()
+        card3.setObjectName("statCard")
+        c3 = QVBoxLayout(card3)
+        c3.setContentsMargins(14, 10, 14, 10)
+        lbl_c3_title = QLabel("SYNC STRATEGY")
+        lbl_c3_title.setStyleSheet("font-size: 11px; color: #9d8ec2; font-weight: 700; letter-spacing: 0.5px;")
+        self.lbl_stat_mode = QLabel(self.config.sync_mode.upper())
+        self.lbl_stat_mode.setStyleSheet("color: #10b981; font-weight: 800; font-size: 14px;")
+        c3.addWidget(lbl_c3_title)
+        c3.addWidget(self.lbl_stat_mode)
+        g_layout.addWidget(card3, 0, 2)
+
+        # Card 4: Timer
+        card4 = QFrame()
+        card4.setObjectName("statCard")
+        c4 = QVBoxLayout(card4)
+        c4.setContentsMargins(14, 10, 14, 10)
+        lbl_c4_title = QLabel("AUTO SYNC")
+        lbl_c4_title.setStyleSheet("font-size: 11px; color: #9d8ec2; font-weight: 700; letter-spacing: 0.5px;")
+        self.lbl_stat_timer = QLabel("Checking...")
+        self.lbl_stat_timer.setStyleSheet("color: #f5b65a; font-weight: 800; font-size: 14px;")
+        c4.addWidget(lbl_c4_title)
+        c4.addWidget(self.lbl_stat_timer)
+        g_layout.addWidget(card4, 0, 3)
+
+        layout.addWidget(grid_container)
+
+        # Action Buttons Bar
+        h_actions = QHBoxLayout()
+        h_actions.setSpacing(10)
+
+        self.btn_sync_now = QPushButton("⚡ Sync Now")
+        self.btn_sync_now.setObjectName("btnPrimary")
+        self.btn_sync_now.setMinimumWidth(130)
+        self.btn_sync_now.clicked.connect(lambda: self.run_sync_process(dry_run=False))
+
+        self.btn_dry_run = QPushButton("🔍 Dry-Run Preview")
+        self.btn_dry_run.setMinimumWidth(150)
+        self.btn_dry_run.clicked.connect(lambda: self.run_sync_process(dry_run=True))
+
+        self.btn_cancel_sync = QPushButton("🛑 Stop Sync")
+        self.btn_cancel_sync.setObjectName("btnDanger")
+        self.btn_cancel_sync.setEnabled(False)
+        self.btn_cancel_sync.clicked.connect(self.cancel_sync_process)
+
+        self.btn_refresh_stat = QPushButton("🔄 Refresh Status")
+        self.btn_refresh_stat.clicked.connect(self.update_timer_status)
+
+        h_actions.addWidget(self.btn_sync_now)
+        h_actions.addWidget(self.btn_dry_run)
+        h_actions.addWidget(self.btn_cancel_sync)
+        h_actions.addWidget(self.btn_refresh_stat)
+        h_actions.addStretch()
+        layout.addLayout(h_actions)
+
+        # Terminal Stream Header & View
+        h_term_head = QHBoxLayout()
+        lbl_stream = QLabel("● Real-Time Sync Engine Stream:")
+        lbl_stream.setStyleSheet("color: #b794ff; font-weight: 700; font-size: 12px;")
+        btn_clear_stream = QPushButton("Clear Stream")
+        btn_clear_stream.setFixedHeight(26)
+        btn_clear_stream.setStyleSheet("padding: 2px 8px; font-size: 11px;")
+        btn_clear_stream.clicked.connect(lambda: self.overview_log_view.clear())
+        h_term_head.addWidget(lbl_stream)
+        h_term_head.addStretch()
+        h_term_head.addWidget(btn_clear_stream)
+        layout.addLayout(h_term_head)
+
+        self.overview_log_view = QTextEdit()
+        self.overview_log_view.setReadOnly(True)
+        self.overview_log_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(self.overview_log_view, 1)
+
+        self.tabs.addTab(tab_widget, "⚡ Overview")
+        self.update_timer_status()
+
+    def update_timer_status(self):
+        active, interval = timer_status()
+        if active:
+            self.lbl_stat_timer.setText(f"On (every {interval})" if interval else "On")
+            self.lbl_stat_timer.setStyleSheet("color: #10b981; font-weight: 800; font-size: 14px;")
+        else:
+            self.lbl_stat_timer.setText("Off")
+            self.lbl_stat_timer.setStyleSheet("color: #ec4899; font-weight: 800; font-size: 14px;")
+        if hasattr(self, "combo_timer_int") and interval in TIMER_INTERVALS:
+            self.combo_timer_int.setCurrentText(interval)
+
+    # --------------------------------------------------------------------------
+    # Tab 2: Folders
+    # --------------------------------------------------------------------------
+    def setup_tab_folders(self):
+        tab_widget = QWidget()
+        layout = QVBoxLayout(tab_widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
+
+        lbl_desc = QLabel("Synced Local Directories (Stored on cloud under Devices/<DeviceName>/<FolderName>):")
+        lbl_desc.setStyleSheet("color: #9d8ec2; font-size: 12px;")
+        layout.addWidget(lbl_desc)
+
+        self.folders_list = QListWidget()
+        self.folders_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.refresh_folder_list()
+        layout.addWidget(self.folders_list, 1)
+
+        h_btns = QHBoxLayout()
+        h_btns.setSpacing(10)
+
+        btn_add = QPushButton("+ Add Folder...")
+        btn_add.setObjectName("btnPrimary")
+        btn_add.clicked.connect(self.add_sync_folder)
+
+        btn_rem = QPushButton("- Remove Selected")
+        btn_rem.clicked.connect(self.remove_sync_folder)
+
+        btn_open = QPushButton("📂 Open in File Manager")
+        btn_open.clicked.connect(self.open_selected_folder)
+
+        h_btns.addWidget(btn_add)
+        h_btns.addWidget(btn_rem)
+        h_btns.addWidget(btn_open)
+        h_btns.addStretch()
+        layout.addLayout(h_btns)
+
+        # Informational Note Card
+        hint_card = QFrame()
+        hint_card.setObjectName("card")
+        hc_layout = QHBoxLayout(hint_card)
+        hc_layout.setContentsMargins(14, 10, 14, 10)
+        lbl_hint = QLabel("💡 Tip: You can sync any folder from your home directory. Proton Drive keeps them partitioned per-device.")
+        lbl_hint.setStyleSheet("color: #38bdf8; font-size: 12px;")
+        lbl_hint.setWordWrap(True)
+        hc_layout.addWidget(lbl_hint)
+        layout.addWidget(hint_card)
+
+        self.tabs.addTab(tab_widget, "📁 Folders")
+
+    def refresh_folder_list(self):
+        self.folders_list.clear()
+        for f in self.config.sync_dirs:
+            item = QListWidgetItem(f)
+            if not os.path.exists(f):
+                item.setText(f"📁 {f}  (⚠ Missing or Non-existent)")
+                item.setForeground(QColor("#ec4899"))
+            else:
+                item.setText(f"📁 {f}")
+            item.setData(Qt.UserRole, f)
+            self.folders_list.addItem(item)
+
+    def add_sync_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Directory to Sync", str(Path.home()))
+        if not folder:
+            return
+        folder = folder.rstrip("/") or "/"
+        if folder in self.config.sync_dirs:
+            return
+        clash = [d for d in self.config.sync_dirs if Path(d).name == Path(folder).name]
+        if clash:
+            QMessageBox.warning(
+                self, "Same folder name",
+                f"'{clash[0]}' is already synced, and it has the same name ('{Path(folder).name}').\n"
+                "Both would go to the same cloud folder, so this one can't be added. Rename one of them first.")
+            return
+        self.config.sync_dirs.append(folder)
+        self.save_config_or_warn()
+        self.refresh_folder_list()
+        self.status_bar.showMessage(f"Added folder: {folder}", 3500)
+
+    def save_config_or_warn(self) -> bool:
+        try:
+            self.config.save()
+            return True
+        except (OSError, RuntimeError) as e:
+            QMessageBox.critical(self, "Couldn't save", f"Your settings couldn't be saved:\n{e}")
+            return False
+
+    def open_path(self, path):
+        if not shutil.which("xdg-open"):
+            QMessageBox.information(self, "Open", f"Install xdg-utils to open files from here.\nPath: {path}")
+            return
+        subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def remove_sync_folder(self):
+        row = self.folders_list.currentRow()
+        if row >= 0:
+            item = self.folders_list.item(row)
+            folder = item.data(Qt.UserRole)
+            if folder in self.config.sync_dirs:
+                self.config.sync_dirs.remove(folder)
+                self.save_config_or_warn()
+                self.refresh_folder_list()
+                self.status_bar.showMessage(f"Removed folder: {folder}", 3500)
+
+    def open_selected_folder(self):
+        item = self.folders_list.currentItem()
+        if item:
+            folder = item.data(Qt.UserRole)
+            if os.path.exists(folder):
+                self.open_path(folder)
+            else:
+                QMessageBox.warning(self, "Directory Not Found", f"Cannot open non-existent directory:\n{folder}")
+
+    # --------------------------------------------------------------------------
+    # Tab 3: Rclone Settings (Fully Scrollable & Adaptive)
+    # --------------------------------------------------------------------------
+    def setup_tab_settings(self):
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(14)
+
+        # 1. Identity & Remote Group
+        grp_gen = QGroupBox("Proton Login && Computer Name")
+        g_layout = QGridLayout(grp_gen)
+        g_layout.setSpacing(10)
+
+        g_layout.addWidget(QLabel("Rclone Remote:"), 0, 0)
+        self.edit_remote = QLineEdit(self.config.remote_name)
+        g_layout.addWidget(self.edit_remote, 0, 1)
+
+        g_layout.addWidget(QLabel("Device Label:"), 0, 2)
+        self.edit_device = QLineEdit(self.config.device_name)
+        g_layout.addWidget(self.edit_device, 0, 3)
+
+        layout.addWidget(grp_gen)
+
+        # 2. Sync Mode Group
+        grp_mode = QGroupBox("Synchronization Strategy")
+        m_layout = QVBoxLayout(grp_mode)
+        m_layout.setSpacing(8)
+
+        self.radio_copy = QRadioButton("Copy Mode [SAFEST / Recommended] — Never deletes files on Proton Drive (additive)")
+        self.radio_sync = QRadioButton("Sync Mode [Exact Mirror] — Deleting a local file removes it on Proton Drive")
+        self.radio_bisync = QRadioButton("BiSync Mode [Bidirectional] — Two-way bidirectional sync between local and cloud")
+
+        if self.config.sync_mode == "sync":
+            self.radio_sync.setChecked(True)
+        elif self.config.sync_mode == "bisync":
+            self.radio_bisync.setChecked(True)
+        else:
+            self.radio_copy.setChecked(True)
+
+        m_layout.addWidget(self.radio_copy)
+        m_layout.addWidget(self.radio_sync)
+        m_layout.addWidget(self.radio_bisync)
+        layout.addWidget(grp_mode)
+
+        # 3. Performance & Concurrency Group
+        grp_perf = QGroupBox("Speed && Notifications")
+        p_layout = QGridLayout(grp_perf)
+        p_layout.setSpacing(12)
+
+        # Transfers
+        p_layout.addWidget(QLabel("Transfers:"), 0, 0)
+        self.spin_transfers = QSpinBox()
+        self.spin_transfers.setRange(1, 16)
+        self.spin_transfers.setValue(self.config.transfers)
+        self.slider_transfers = QSlider(Qt.Horizontal)
+        self.slider_transfers.setRange(1, 16)
+        self.slider_transfers.setValue(self.config.transfers)
+        self.spin_transfers.valueChanged.connect(self.slider_transfers.setValue)
+        self.slider_transfers.valueChanged.connect(self.spin_transfers.setValue)
+
+        trans_box = QHBoxLayout()
+        trans_box.addWidget(self.slider_transfers, 1)
+        trans_box.addWidget(self.spin_transfers)
+        p_layout.addLayout(trans_box, 0, 1)
+
+        # Checkers
+        p_layout.addWidget(QLabel("Checkers:"), 0, 2)
+        self.spin_checkers = QSpinBox()
+        self.spin_checkers.setRange(1, 32)
+        self.spin_checkers.setValue(self.config.checkers)
+        self.slider_checkers = QSlider(Qt.Horizontal)
+        self.slider_checkers.setRange(1, 32)
+        self.slider_checkers.setValue(self.config.checkers)
+        self.spin_checkers.valueChanged.connect(self.slider_checkers.setValue)
+        self.slider_checkers.valueChanged.connect(self.spin_checkers.setValue)
+
+        check_box = QHBoxLayout()
+        check_box.addWidget(self.slider_checkers, 1)
+        check_box.addWidget(self.spin_checkers)
+        p_layout.addLayout(check_box, 0, 3)
+
+        # Bandwidth Limit
+        p_layout.addWidget(QLabel("Bandwidth Limit:"), 1, 0)
+        self.edit_bw = QLineEdit(self.config.bwlimit)
+        self.edit_bw.setPlaceholderText("e.g. 10M, 5M (leave blank for unlimited)")
+        p_layout.addWidget(self.edit_bw, 1, 1)
+
+        # Notification Toggle
+        self.chk_settings_notify = QCheckBox("Desktop Toast Notifications via notify-send")
+        self.chk_settings_notify.setChecked(self.config.notify)
+        p_layout.addWidget(self.chk_settings_notify, 1, 2, 1, 2)
+
+        layout.addWidget(grp_perf)
+
+        # 4. Exclusions Group
+        grp_exc = QGroupBox("Skip These Files && Folders")
+        e_layout = QVBoxLayout(grp_exc)
+        e_layout.setSpacing(8)
+
+        self.list_excludes = QListWidget()
+        self.list_excludes.setMinimumHeight(140)
+        for exc in self.config.excludes:
+            self.list_excludes.addItem(f"🚫 {exc}")
+        e_layout.addWidget(self.list_excludes)
+
+        h_exc_btns = QHBoxLayout()
+        h_exc_btns.setSpacing(8)
+        btn_add_exc = QPushButton("+ Add Pattern...")
+        btn_add_exc.clicked.connect(self.add_exclusion_pattern)
+        btn_rem_exc = QPushButton("- Remove Selected")
+        btn_rem_exc.clicked.connect(self.remove_exclusion_pattern)
+        btn_preset_exc = QPushButton("★ Restore Recommended Presets")
+        btn_preset_exc.clicked.connect(self.restore_preset_excludes)
+
+        h_exc_btns.addWidget(btn_add_exc)
+        h_exc_btns.addWidget(btn_rem_exc)
+        h_exc_btns.addWidget(btn_preset_exc)
+        h_exc_btns.addStretch()
+        e_layout.addLayout(h_exc_btns)
+        layout.addWidget(grp_exc)
+
+        # 5. Save Button Action Bar
+        h_save_bar = QHBoxLayout()
+        btn_save = QPushButton("💾 Save All Configuration Changes")
+        btn_save.setObjectName("btnPrimary")
+        btn_save.setMinimumHeight(38)
+        btn_save.clicked.connect(lambda: self.save_settings(True))
+        h_save_bar.addWidget(btn_save)
+        layout.addLayout(h_save_bar)
+
+        self.tabs.addTab(create_scrollable_container(container), "⚙ Settings")
+
+    def add_exclusion_pattern(self):
+        text, ok = QInputDialog.getText(self, "Add Exclusion Pattern", "Enter glob pattern (e.g. *.iso, cache/**, *.part):")
+        if ok and text.strip():
+            clean = text.strip()
+            if clean not in self.config.excludes:
+                self.config.excludes.append(clean)
+                self.list_excludes.addItem(f"🚫 {clean}")
+
+    def remove_exclusion_pattern(self):
+        row = self.list_excludes.currentRow()
+        if row >= 0:
+            item = self.list_excludes.takeItem(row)
+            clean = item.text().replace("🚫 ", "").strip()
+            if clean in self.config.excludes:
+                self.config.excludes.remove(clean)
+
+    def restore_preset_excludes(self):
+        presets = [
+            ".git/**", "node_modules/**", ".venv/**", "venv/**",
+            "__pycache__/**", ".cache/**", "*.tmp", "*.crdownload"
+        ]
+        self.config.excludes = presets
+        self.list_excludes.clear()
+        for p in presets:
+            self.list_excludes.addItem(f"🚫 {p}")
+
+    def save_settings(self, show_popup=True):
+        self.config.remote_name = self.edit_remote.text().strip() or "protondrive"
+        self.config.device_name = self.edit_device.text().strip().replace("/", "-") or os.uname().nodename
+
+        if self.radio_sync.isChecked():
+            self.config.sync_mode = "sync"
+        elif self.radio_bisync.isChecked():
+            self.config.sync_mode = "bisync"
+        else:
+            self.config.sync_mode = "copy"
+
+        bw = self.edit_bw.text().strip()
+        if bw and not re.fullmatch(r"[0-9.]+[BKMGbkmg]?", bw):
+            QMessageBox.warning(self, "Bandwidth limit", "Use a number with an optional unit, e.g. 5M or 500K. Leave empty for no limit.")
+            return False
+
+        self.config.transfers = self.spin_transfers.value()
+        self.config.checkers = self.spin_checkers.value()
+        self.config.bwlimit = bw
+        self.config.notify = self.chk_settings_notify.isChecked()
+        if not self.save_config_or_warn():
+            return False
+
+        self.edit_device.setText(self.config.device_name)
+        self.refresh_overview_cards()
+        self.status_bar.showMessage(f"Settings saved to {CONFIG_PATH}", 4000)
+        if show_popup:
+            QMessageBox.information(self, "Settings Saved", "Your settings have been saved.")
+        return True
+
+    def refresh_overview_cards(self):
+        self.lbl_stat_remote.setText(f"● {self.config.remote_name}:")
+        self.lbl_stat_device.setText(self.config.device_name)
+        self.lbl_stat_mode.setText(self.config.sync_mode.upper())
+
+    def refresh_settings_widgets(self):
+        """Puts the current config back into every settings widget (e.g. after the wizard)."""
+        self.edit_remote.setText(self.config.remote_name)
+        self.edit_device.setText(self.config.device_name)
+        {"sync": self.radio_sync, "bisync": self.radio_bisync}.get(self.config.sync_mode, self.radio_copy).setChecked(True)
+        self.spin_transfers.setValue(self.config.transfers)
+        self.spin_checkers.setValue(self.config.checkers)
+        self.edit_bw.setText(self.config.bwlimit)
+        self.chk_settings_notify.setChecked(self.config.notify)
+        self.list_excludes.clear()
+        for exc in self.config.excludes:
+            self.list_excludes.addItem(f"🚫 {exc}")
+        self.refresh_folder_list()
+        self.refresh_overview_cards()
+
+    # --------------------------------------------------------------------------
+    # Tab 4: Automation & Service
+    # --------------------------------------------------------------------------
+    def setup_tab_automation(self):
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(14)
+
+        grp_timer = QGroupBox("Systemd User Automation Timer")
+        t_layout = QVBoxLayout(grp_timer)
+        t_layout.setSpacing(12)
+
+        h_top = QHBoxLayout()
+        h_top.addWidget(QLabel("Scheduled Auto-Sync Interval:"))
+        self.combo_timer_int = QComboBox()
+        self.combo_timer_int.addItems(TIMER_INTERVALS)
+        self.combo_timer_int.setCurrentText("30min")
+        h_top.addWidget(self.combo_timer_int)
+        h_top.addStretch()
+        t_layout.addLayout(h_top)
+
+        h_timer_btns = QHBoxLayout()
+        h_timer_btns.setSpacing(10)
+        btn_enable_timer = QPushButton("✔ Enable / Update Timer")
+        btn_enable_timer.setObjectName("btnPrimary")
+        btn_enable_timer.clicked.connect(self.enable_timer)
+
+        btn_disable_timer = QPushButton("✖ Disable Timer")
+        btn_disable_timer.setObjectName("btnDanger")
+        btn_disable_timer.clicked.connect(self.disable_timer)
+
+        h_timer_btns.addWidget(btn_enable_timer)
+        h_timer_btns.addWidget(btn_disable_timer)
+        h_timer_btns.addStretch()
+        t_layout.addLayout(h_timer_btns)
+
+        layout.addWidget(grp_timer)
+
+        # Journal viewer
+        layout.addWidget(QLabel("● Systemd Timer Journal & Telemetry Output:"))
+        self.systemd_status_view = QTextEdit()
+        self.systemd_status_view.setReadOnly(True)
+        self.systemd_status_view.setMinimumHeight(180)
+        layout.addWidget(self.systemd_status_view, 1)
+
+        btn_refresh_sys = QPushButton("🔄 Refresh Systemd Telemetry")
+        btn_refresh_sys.clicked.connect(self.refresh_systemd_status)
+        layout.addWidget(btn_refresh_sys)
+
+        self.tabs.addTab(create_scrollable_container(container), "⏱ Automation")
+        self.refresh_systemd_status()
+
+    def enable_timer(self):
+        interval = self.combo_timer_int.currentText()
+        ok, msg = set_timer(True, interval)
+        self.refresh_systemd_status()
+        self.update_timer_status()
+        if ok:
+            self.status_bar.showMessage(f"Background sync on: every {interval}", 4000)
+        else:
+            QMessageBox.warning(self, "Background sync", f"Couldn't turn on the timer:\n{msg}")
+
+    def disable_timer(self):
+        ok, msg = set_timer(False)
+        self.refresh_systemd_status()
+        self.update_timer_status()
+        self.status_bar.showMessage("Background sync off." if ok else msg, 4000)
+
+    def refresh_systemd_status(self):
+        if not shutil.which("systemctl"):
+            self.systemd_status_view.setPlainText("systemd isn't available on this system, so background sync can't be used.")
+            return
+        res = run_quiet(["systemctl", "--user", "status", "--no-pager", "sleepy-proton-sync.timer", "sleepy-proton-sync.service"])
+        text = (res.stdout or res.stderr).strip()
+        self.systemd_status_view.setPlainText(text or "Background sync is off (no timer installed).")
+
+    # --------------------------------------------------------------------------
+    # Tab 5: Logs & History
+    # --------------------------------------------------------------------------
+    def setup_tab_logs(self):
+        tab_widget = QWidget()
+        layout = QVBoxLayout(tab_widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
+
+        h_tools = QHBoxLayout()
+        h_tools.setSpacing(8)
+
+        btn_refresh = QPushButton("🔄 Refresh Log")
+        btn_refresh.clicked.connect(self.load_full_log)
+
+        btn_clear = QPushButton("🗑 Clear History")
+        btn_clear.setObjectName("btnDanger")
+        btn_clear.clicked.connect(self.clear_log)
+
+        btn_open_log = QPushButton("📄 Open Log File")
+        btn_open_log.clicked.connect(self.open_log_file)
+
+        h_tools.addWidget(btn_refresh)
+        h_tools.addWidget(btn_clear)
+        h_tools.addWidget(btn_open_log)
+        h_tools.addStretch()
+        layout.addLayout(h_tools)
+
+        self.full_log_view = QTextEdit()
+        self.full_log_view.setReadOnly(True)
+        self.full_log_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(self.full_log_view, 1)
+
+        self.tabs.addTab(tab_widget, "📜 Live Logs")
+        self.load_full_log()
+
+    def auto_refresh_log(self):
+        if self.tabs.currentIndex() == 4:
+            self.load_full_log(force=False)
+
+    def load_full_log(self, force=True):
+        path = self.config.log_path
+        try:
+            mtime = path.stat().st_mtime if path.exists() else None
+        except OSError:
+            mtime = None
+        if not force and mtime == self._log_mtime:
+            return
+        self._log_mtime = mtime
+        if mtime is None:
+            self.full_log_view.setPlainText(f"No sync log yet ({path}). It appears after the first sync.")
+            return
+        try:
+            with path.open("r", encoding="utf-8", errors="ignore") as fh:
+                lines = fh.readlines()[-500:]
+            self.full_log_view.setPlainText("".join(lines))
+            self.full_log_view.verticalScrollBar().setValue(self.full_log_view.verticalScrollBar().maximum())
+        except OSError as e:
+            self.full_log_view.setPlainText(f"Couldn't read the log: {e}")
+
+    def clear_log(self):
+        path = self.config.log_path
+        if path.exists():
+            if QMessageBox.question(self, "Clear log", "Delete all log history?",
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+            path.write_text("", encoding="utf-8")
+            self.load_full_log()
+            self.status_bar.showMessage("Log history cleared.", 3000)
+
+    def open_log_file(self):
+        if self.config.log_path.exists():
+            self.open_path(self.config.log_path)
+
+    # --------------------------------------------------------------------------
+    # Sync Execution
+    # --------------------------------------------------------------------------
+    def run_sync_process(self, dry_run=False):
+        if self.process and self.process.state() == QProcess.Running:
+            QMessageBox.information(self, "Sync Active", "A synchronization task is already running in the background.")
+            return
+
+        if not SYNC_SCRIPT.exists():
+            QMessageBox.critical(self, "Sync engine missing", f"Couldn't find {SYNC_SCRIPT}.\nRe-run ./install.sh.")
+            return
+        if not self.save_settings(show_popup=False):
+            return
+        if self.config.sync_mode != "copy" and not dry_run:
+            what = ("Files you deleted on this computer will also be DELETED in Proton Drive."
+                    if self.config.sync_mode == "sync" else
+                    "Deletions on either side will be copied to the other side.")
+            if QMessageBox.question(
+                    self, "Check before syncing",
+                    f"Mode is '{self.config.sync_mode}'. {what}\n\nTip: run a Dry-Run Preview first.\n\nSync now?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+                return
+        self.tabs.setCurrentIndex(0)
+
+        self.btn_sync_now.setEnabled(False)
+        self.btn_dry_run.setEnabled(False)
+        self.btn_cancel_sync.setEnabled(True)
+
+        mode_str = "DRY-RUN PREVIEW" if dry_run else "LIVE SYNC"
+        self.overview_log_view.append(f"\n>>> Starting {mode_str} via {SYNC_SCRIPT}...")
+        self.status_bar.showMessage(f"Executing {mode_str}...", 5000)
+
+        self.process = QProcess(self)
+        self.process.errorOccurred.connect(self.on_sync_start_error)
+        self.process.readyReadStandardOutput.connect(self.on_sync_output)
+        self.process.readyReadStandardError.connect(self.on_sync_error)
+        self.process.finished.connect(self.on_sync_finished)
+
+        args = []
+        if dry_run:
+            args.append("--dry-run")
+
+        args += ["--config", str(CONFIG_PATH)]
+        self.process.start(str(SYNC_SCRIPT), args)
+
+    def on_sync_start_error(self, err):
+        if err == QProcess.FailedToStart:
+            self.overview_log_view.append(f"\n>>> Couldn't start {SYNC_SCRIPT} (is it executable?).")
+            self.btn_sync_now.setEnabled(True)
+            self.btn_dry_run.setEnabled(True)
+            self.btn_cancel_sync.setEnabled(False)
+
+    def on_sync_output(self):
+        data = self.process.readAllStandardOutput().data().decode("utf-8", errors="ignore")
+        self.overview_log_view.insertPlainText(data)
+        self.overview_log_view.verticalScrollBar().setValue(self.overview_log_view.verticalScrollBar().maximum())
+
+    def on_sync_error(self):
+        data = self.process.readAllStandardError().data().decode("utf-8", errors="ignore")
+        self.overview_log_view.insertPlainText(data)
+        self.overview_log_view.verticalScrollBar().setValue(self.overview_log_view.verticalScrollBar().maximum())
+
+    def cancel_sync_process(self):
+        if self.process and self.process.state() == QProcess.Running:
+            self.process.terminate()
+            self.overview_log_view.append("\n>>> Termination signal sent to sync engine.")
+            self.status_bar.showMessage("Sync process cancelled.", 4000)
+
+    def on_sync_finished(self, exit_code, exit_status):
+        self.btn_sync_now.setEnabled(True)
+        self.btn_dry_run.setEnabled(True)
+        self.btn_cancel_sync.setEnabled(False)
+
+        if exit_code == 0:
+            self.overview_log_view.append("\n>>> Sync finished successfully (Exit Code 0).")
+            self.status_bar.showMessage("Sync completed successfully!", 5000)
+        else:
+            self.overview_log_view.append(f"\n>>> Sync finished with exit code {exit_code}.")
+            self.status_bar.showMessage(f"Sync finished with code {exit_code}.", 5000)
+
+        self.load_full_log()
+        self.update_timer_status()
+
+    # --------------------------------------------------------------------------
+    # External Dialogs
+    # --------------------------------------------------------------------------
+    def open_setup_wizard(self):
+        wizard = SetupWizardDialog(self, self.config)
+        if wizard.exec() == QDialog.Accepted:
+            self.config.load()
+            self.refresh_settings_widgets()
+            self.update_timer_status()
+            self.refresh_systemd_status()
+            self.status_bar.showMessage("Setup wizard completed!", 4000)
+
+    def run_diagnostics(self):
+        if self.diag_proc and self.diag_proc.state() != QProcess.NotRunning:
+            return
+        self.tabs.setCurrentIndex(0)
+        self.overview_log_view.append("\n>>> Running system check (can take ~30 seconds)...")
+        self.btn_diag.setEnabled(False)
+        self.diag_proc = QProcess(self)
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("NO_COLOR", "1")
+        self.diag_proc.setProcessEnvironment(env)
+        self.diag_proc.setProcessChannelMode(QProcess.MergedChannels)
+        self.diag_proc.readyRead.connect(
+            lambda: self.overview_log_view.insertPlainText(
+                ANSI_RE.sub("", bytes(self.diag_proc.readAll()).decode("utf-8", "ignore"))))
+        self.diag_proc.finished.connect(lambda *_: self.btn_diag.setEnabled(True))
+        self.diag_proc.errorOccurred.connect(lambda *_: self.btn_diag.setEnabled(True))
+        self.diag_proc.start("bash", [str(CHECK_SCRIPT)])
+
+    def closeEvent(self, event):
+        if self.process and self.process.state() != QProcess.NotRunning:
+            reply = QMessageBox.question(
+                self, "Sync running",
+                "A sync is still running. Stop it and quit?\n\n(Background syncs keep working either way.)",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply != QMessageBox.Yes:
+                event.ignore()
+                return
+            self.process.terminate()
+            if not self.process.waitForFinished(8000):
+                self.process.kill()
+        event.accept()
+
+
+def main():
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print("Usage: sleepy-proton-gui [--wizard]\n\n  --wizard   Open the setup wizard straight away\n  --version  Show the version")
+        return
+    if "--version" in sys.argv:
+        print(f"sleepy-proton-gui {APP_VERSION}")
+        return
+    # Enable high-DPI scaling attributes before creating QApplication
+    if hasattr(Qt, "HighDpiScaleFactorRoundingPolicy"):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("Sleepy Proton Drive")
+    app.setOrganizationName("The Sleepy Labs")
+    app.setDesktopFileName("thesleepylabs-proton-drive")
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

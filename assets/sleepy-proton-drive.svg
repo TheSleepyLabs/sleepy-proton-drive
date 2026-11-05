@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Outer Glow & Gradients -->
+    <radialGradient id="bgGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#1e1338"/>
+      <stop offset="70%" stop-color="#0e0a1f"/>
+      <stop offset="100%" stop-color="#07050d"/>
+    </radialGradient>
+
+    <!-- The Sleepy Labs Brand Cosmic Neon Gradients -->
+    <linearGradient id="violetNeon" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="50%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+
+    <linearGradient id="cyanCyber" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+
+    <linearGradient id="pinkCyber" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f43f5e"/>
+      <stop offset="50%" stop-color="#ec4899"/>
+      <stop offset="100%" stop-color="#d946ef"/>
+    </linearGradient>
+
+    <linearGradient id="amberGold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+
+    <!-- Cloud Core Gradient -->
+    <linearGradient id="cloudGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="45%" stop-color="#8b5cf6"/>
+      <stop offset="85%" stop-color="#b794ff"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+
+    <!-- Drop Shadows & Glow Filters -->
+    <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+
+    <filter id="orbitGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Background Base: Rounded Squircle -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bgGlow)" stroke="#8b5cf6" stroke-width="4" stroke-opacity="0.35"/>
+
+  <!-- Orbital Cyber Rings (The Sleepy Labs Telemetry) -->
+  <ellipse cx="256" cy="256" rx="200" ry="120" fill="none" stroke="url(#violetNeon)" stroke-width="2.5" stroke-dasharray="12 18" stroke-opacity="0.4" transform="rotate(-25 256 256)"/>
+  <ellipse cx="256" cy="256" rx="220" ry="80" fill="none" stroke="url(#cyanCyber)" stroke-width="2" stroke-dasharray="8 24" stroke-opacity="0.3" transform="rotate(35 256 256)"/>
+
+  <!-- Small Satellite Gems on Orbit -->
+  <circle cx="100" cy="180" r="5" fill="#38bdf8" filter="url(#orbitGlow)"/>
+  <circle cx="410" cy="320" r="6" fill="#ec4899" filter="url(#orbitGlow)"/>
+  <circle cx="360" cy="140" r="4.5" fill="#f5b65a" filter="url(#orbitGlow)"/>
+
+  <!-- Stylized Cloud / Proton Shield Silhouette -->
+  <g filter="url(#neonGlow)">
+    <!-- Base Cloud Base -->
+    <path d="M 180 340 
+             L 340 340 
+             A 60 60 0 0 0 380 230 
+             A 75 75 0 0 0 260 160 
+             A 65 65 0 0 0 160 230 
+             A 55 55 0 0 0 180 340 Z"
+          fill="url(#cloudGrad)"/>
+  </g>
+
+  <!-- Inner Sync Arrows (Bi-directional Harmonic Sync Ring) -->
+  <g transform="translate(256, 260)">
+    <!-- Top Sync Arrow Arc -->
+    <path d="M -45 -15 A 50 50 0 0 1 42 -18" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round"/>
+    <polygon points="45,-30 55,-12 35,-12" fill="#ffffff" transform="rotate(40 45 -18)"/>
+
+    <!-- Bottom Sync Arrow Arc -->
+    <path d="M 45 15 A 50 50 0 0 1 -42 18" fill="none" stroke="#38bdf8" stroke-width="7" stroke-linecap="round"/>
+    <polygon points="-45,30 -55,12 -35,12" fill="#38bdf8" transform="rotate(40 -45 18)"/>
+
+    <!-- Center Pulse Jewel -->
+    <circle cx="0" cy="0" r="10" fill="#f5b65a" filter="url(#orbitGlow)"/>
+  </g>
+
+  <!-- Constellation Accent Dots -->
+  <circle cx="210" cy="205" r="3" fill="#ffffff" opacity="0.8"/>
+  <circle cx="305" cy="215" r="3" fill="#ffffff" opacity="0.8"/>
+  <circle cx="256" cy="190" r="2.5" fill="#b794ff" opacity="0.9"/>
+
+  <!-- Bottom Brand Mark Indicator: The Sleepy Labs Squircle Dot -->
+  <rect x="246" y="430" width="20" height="20" rx="6" fill="#8b5cf6" filter="url(#orbitGlow)"/>
+</svg>

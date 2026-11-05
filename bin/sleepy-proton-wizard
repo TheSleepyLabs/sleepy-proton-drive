@@ -1,0 +1,388 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# The Sleepy Labs // Sleepy Proton Drive - Terminal Setup Wizard
+# ==============================================================================
+# Step by step: log in to Proton Drive (via rclone), pick folders, pick a sync
+# mode, and optionally turn on automatic background syncing.
+# ==============================================================================
+
+set -euo pipefail
+
+CLR_RESET="\033[0m"
+CLR_BOLD="\033[1m"
+CLR_DIM="\033[2m"
+CLR_VIOLET="\033[38;2;139;92;246m"
+CLR_LAVENDER="\033[38;2;183;148;255m"
+CLR_CYAN="\033[38;2;56;189;248m"
+CLR_PINK="\033[38;2;236;72;153m"
+CLR_EMERALD="\033[38;2;16;185;129m"
+CLR_AMBER="\033[38;2;245;182;90m"
+CLR_WHITE="\033[38;2;245;245;255m"
+if [[ ! -t 1 || -n "${NO_COLOR:-}" ]]; then
+    CLR_RESET="" CLR_BOLD="" CLR_DIM="" CLR_VIOLET="" CLR_LAVENDER="" CLR_CYAN=""
+    CLR_PINK="" CLR_EMERALD="" CLR_AMBER="" CLR_WHITE=""
+fi
+
+CONFIG_FILE="${PROTON_SYNC_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/proton-sync.conf}"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+SYNC_BIN="$SCRIPT_DIR/sleepy-proton-sync"
+if [[ -x "$SCRIPT_DIR/sleepy-proton-check" ]]; then
+    CHECK_BIN="$SCRIPT_DIR/sleepy-proton-check"
+else
+    CHECK_BIN="$SCRIPT_DIR/../check-requirements.sh"
+fi
+
+if [[ ! -t 0 ]]; then
+    echo "The setup wizard is interactive: please run it in a terminal." >&2
+    exit 1
+fi
+
+# Defaults (same as sleepy-proton-sync); an existing config overrides them.
+REMOTE_NAME="protondrive"
+DEVICE_NAME=""
+SYNC_DIRS=("$HOME/Documents" "$HOME/Pictures")
+SYNC_MODE="copy"
+NOTIFY=true
+LOG_FILE="$HOME/.local/share/proton-sync.log"
+LOG_MAX_LINES=5000
+RCLONE_FLAGS=(
+    "--verbose" "--stats-one-line" "--stats=30s"
+    "--transfers=4" "--checkers=8" "--tpslimit=10" "--skip-links"
+    "--exclude" ".git/**" "--exclude" "node_modules/**" "--exclude" ".venv/**"
+    "--exclude" "venv/**" "--exclude" "__pycache__/**" "--exclude" ".cache/**"
+    "--exclude" "*.tmp" "--exclude" "*.crdownload" "--exclude" "*.part"
+)
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE" || true
+fi
+[[ -z "${DEVICE_NAME// /}" ]] && DEVICE_NAME="$(hostname 2>/dev/null || uname -n)"
+
+# Current transfers / bandwidth values from the flags.
+TRANSFERS=4
+BWLIMIT=""
+for f in "${RCLONE_FLAGS[@]}"; do
+    case "$f" in
+        --transfers=*) TRANSFERS="${f#*=}" ;;
+        --bwlimit=*) BWLIMIT="${f#*=}" ;;
+    esac
+done
+
+# Quote a value for a "double-quoted" Bash string.
+dq() {
+    local s="$1"
+    s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//\$/\\\$}"; s="${s//\`/\\\`}"
+    printf '"%s"' "$s"
+}
+# Same, but keep $HOME as a variable so the config works if the home folder moves.
+dq_path() {
+    local p="$1"
+    if [[ "$p" == "$HOME" ]]; then
+        printf '"$HOME"'
+    elif [[ "$p" == "$HOME/"* ]]; then
+        local rest
+        rest="$(dq "${p#"$HOME"}")"
+        printf '"$HOME%s' "${rest:1}"
+    else
+        dq "$p"
+    fi
+}
+
+ask() {  # ask "Question" "default" -> REPLY
+    local prompt="$1" def="${2:-}"
+    if [[ -n "$def" ]]; then
+        read -rp "$prompt [$def]: " REPLY || exit 1
+        REPLY="${REPLY:-$def}"
+    else
+        read -rp "$prompt: " REPLY || exit 1
+    fi
+}
+yes_no() {  # yes_no "Question" Y|N -> exit status
+    local def="$2" ans
+    read -rp "$1 [$([[ $def == Y ]] && echo 'Y/n' || echo 'y/N')]: " ans || exit 1
+    ans="${ans:-$def}"
+    [[ "$ans" =~ ^[Yy] ]]
+}
+
+print_header() {
+    clear 2>/dev/null || true
+    echo -e "${CLR_VIOLET}${CLR_BOLD}"
+    echo "   ★  SLEEPY PROTON DRIVE  ★   setup wizard"
+    echo -e "${CLR_RESET}${CLR_DIM}   by The Sleepy Labs - back up your folders to Proton Drive with rclone${CLR_RESET}"
+    echo -e "${CLR_LAVENDER}==============================================================================${CLR_RESET}"
+}
+
+step_banner() {
+    echo -e "\n${CLR_VIOLET}[Step $1]${CLR_RESET} ${CLR_BOLD}${CLR_WHITE}$2${CLR_RESET}"
+    echo -e "${CLR_DIM}------------------------------------------------------------------------------${CLR_RESET}"
+}
+
+print_header
+
+# ------------------------------------------------------------------------------
+step_banner "1/6" "Checking rclone"
+# ------------------------------------------------------------------------------
+if ! command -v rclone &>/dev/null || ! rclone help backend protondrive &>/dev/null; then
+    echo -e "${CLR_PINK}rclone (with Proton Drive support) is not installed.${CLR_RESET}"
+    if yes_no "Install it now? (uses sudo and your package manager)" Y; then
+        "$CHECK_BIN" --fix || true
+        hash -r
+    fi
+    if ! command -v rclone &>/dev/null; then
+        echo "Please install rclone 1.63 or newer (https://rclone.org/install/) and run this wizard again."
+        exit 1
+    fi
+fi
+echo -e "${CLR_EMERALD}✓ $(rclone version 2>/dev/null | head -n1)${CLR_RESET}"
+
+# ------------------------------------------------------------------------------
+step_banner "2/6" "Log in to Proton Drive"
+# ------------------------------------------------------------------------------
+ask "rclone remote name (leave as is unless you know you need another)" "$REMOTE_NAME"
+REMOTE_NAME="$REPLY"
+if [[ ! "$REMOTE_NAME" =~ ^[A-Za-z0-9_][A-Za-z0-9_.\ -]*$ ]]; then
+    echo -e "${CLR_PINK}Remote names may only use letters, numbers, spaces, '-', '_' and '.'.${CLR_RESET}"
+    exit 1
+fi
+
+KEEP_LOGIN=false
+if grep -qxF "${REMOTE_NAME}:" <<< "$(rclone listremotes 2>/dev/null)"; then
+    echo "Found an existing login ('${REMOTE_NAME}'). Testing it..."
+    if rclone lsd "${REMOTE_NAME}:" --contimeout 15s --timeout 30s &>/dev/null; then
+        echo -e "${CLR_EMERALD}✓ Your existing login works.${CLR_RESET}"
+        yes_no "Keep using it?" Y && KEEP_LOGIN=true
+    else
+        echo -e "${CLR_AMBER}The existing login doesn't work any more, so let's log in again.${CLR_RESET}"
+    fi
+fi
+
+if [[ "$KEEP_LOGIN" == "false" ]]; then
+    echo -e "${CLR_DIM}Your login is passed straight to rclone on this computer and saved in"
+    echo -e "~/.config/rclone/rclone.conf. Sleepy Proton Drive never sends it anywhere else.${CLR_RESET}\n"
+
+    while true; do
+        ask "Proton email or username"
+        PROTON_USER="$REPLY"
+        [[ -n "$PROTON_USER" ]] || { echo "Please enter your email or username."; continue; }
+
+        read -rsp "Proton password (hidden): " PROTON_PASS || exit 1; echo
+        [[ -n "$PROTON_PASS" ]] || { echo "Please enter your password."; continue; }
+
+        PROTON_MAILBOX_PASS=""
+        if yes_no "Does your account use two-password mode (a separate mailbox password)?" N; then
+            read -rsp "Mailbox password (hidden): " PROTON_MAILBOX_PASS || exit 1; echo
+        fi
+
+        PROTON_OTP_SECRET=""
+        PROTON_2FA=""
+        if yes_no "Does your account have two-factor authentication (2FA)?" N; then
+            echo -e "${CLR_DIM}Optional: saving your 2FA secret key lets rclone log in again by itself if"
+            echo -e "the session expires. It is stored next to your password, so only do this if"
+            echo -e "you are OK with that. Most people should skip it.${CLR_RESET}"
+            if yes_no "Save the 2FA secret key?" N; then
+                read -rsp "2FA secret key (base32, hidden): " PROTON_OTP_SECRET || exit 1; echo
+            fi
+            ask "Current 6-digit 2FA code (type it just before pressing Enter)"
+            PROTON_2FA="${REPLY// /}"
+        fi
+
+        echo -e "\n${CLR_CYAN}Logging in to Proton (this can take up to a minute)...${CLR_RESET}"
+        # Obscure secrets before they go on the command line so they never appear
+        # in plain text in the process list.
+        cmd=(rclone config create "$REMOTE_NAME" protondrive --no-obscure
+             username "$PROTON_USER"
+             password "$(printf '%s' "$PROTON_PASS" | rclone obscure -)")
+        [[ -n "$PROTON_MAILBOX_PASS" ]] && cmd+=(mailbox_password "$(printf '%s' "$PROTON_MAILBOX_PASS" | rclone obscure -)")
+        [[ -n "$PROTON_OTP_SECRET" ]] && cmd+=(otp_secret_key "$(printf '%s' "$PROTON_OTP_SECRET" | rclone obscure -)")
+        [[ -n "$PROTON_2FA" ]] && cmd+=(2fa "$PROTON_2FA")
+        unset PROTON_PASS PROTON_MAILBOX_PASS PROTON_OTP_SECRET
+
+        if out="$("${cmd[@]}" 2>&1)" && rclone lsd "${REMOTE_NAME}:" --contimeout 15s --timeout 60s &>/dev/null; then
+            echo -e "${CLR_EMERALD}✓ Logged in to Proton Drive!${CLR_RESET}"
+            break
+        fi
+        echo -e "${CLR_PINK}Login failed.${CLR_RESET} rclone said:"
+        echo "$out" | grep -vi -E 'password|otp|token|salted' | tail -n 8 || true
+        echo -e "${CLR_DIM}Check your password, and if you use 2FA, enter a fresh code.${CLR_RESET}"
+        yes_no "Try again?" Y || { echo "Setup cancelled."; exit 1; }
+    done
+fi
+
+# ------------------------------------------------------------------------------
+step_banner "3/6" "Name this computer"
+# ------------------------------------------------------------------------------
+echo -e "${CLR_DIM}Your folders go to Devices/<name>/... in Proton Drive, so several computers don't mix.${CLR_RESET}"
+ask "Computer name" "$DEVICE_NAME"
+DEVICE_NAME="${REPLY//\//-}"
+echo -e "${CLR_EMERALD}✓ Files will go to: Devices/${DEVICE_NAME}/${CLR_RESET}"
+
+# ------------------------------------------------------------------------------
+step_banner "4/6" "Pick folders to back up"
+# ------------------------------------------------------------------------------
+STANDARD=(Documents Pictures Desktop Downloads Music Videos)
+DEFAULT_PICK=""
+for i in "${!STANDARD[@]}"; do
+    path="$HOME/${STANDARD[$i]}"
+    mark=" "
+    for d in "${SYNC_DIRS[@]}"; do
+        [[ "${d/#\~/$HOME}" == "$path" ]] && { mark="*"; DEFAULT_PICK+="$((i + 1)),"; }
+    done
+    printf "  [%d] %s %-10s (%s)\n" "$((i + 1))" "$mark" "${STANDARD[$i]}" "$path"
+done
+DEFAULT_PICK="${DEFAULT_PICK%,}"
+ask "Numbers to back up, comma separated (* = currently selected)" "${DEFAULT_PICK:-1,2}"
+
+NEW_DIRS=()
+IFS=',' read -ra picks <<< "$REPLY"
+for n in "${picks[@]}"; do
+    n="${n// /}"
+    if [[ "$n" =~ ^[1-6]$ ]]; then
+        NEW_DIRS+=("$HOME/${STANDARD[$((n - 1))]}")
+    fi
+done
+# Keep any custom folders from the old config.
+for d in "${SYNC_DIRS[@]}"; do
+    d="${d/#\~/$HOME}"
+    is_std=false
+    for s in "${STANDARD[@]}"; do [[ "$d" == "$HOME/$s" ]] && is_std=true; done
+    if [[ "$is_std" == "false" ]] && yes_no "Keep custom folder '$d'?" Y; then
+        NEW_DIRS+=("$d")
+    fi
+done
+while true; do
+    ask "Add another folder? Type its path, or press Enter to continue" ""
+    [[ -z "$REPLY" ]] && break
+    custom="${REPLY/#\~/$HOME}"
+    custom="${custom%/}"
+    if [[ -d "$custom" ]]; then
+        NEW_DIRS+=("$custom"); echo -e "${CLR_EMERALD}✓ Added $custom${CLR_RESET}"
+    else
+        echo -e "${CLR_AMBER}'$custom' doesn't exist. Not added.${CLR_RESET}"
+    fi
+done
+if [[ ${#NEW_DIRS[@]} -eq 0 ]]; then
+    echo -e "${CLR_AMBER}No folders picked. You can add some later in the GUI or by running this wizard again.${CLR_RESET}"
+fi
+SYNC_DIRS=()
+[[ ${#NEW_DIRS[@]} -gt 0 ]] && SYNC_DIRS=("${NEW_DIRS[@]}")
+
+# ------------------------------------------------------------------------------
+step_banner "5/6" "How should it sync?"
+# ------------------------------------------------------------------------------
+echo -e "  [1] ${CLR_BOLD}copy${CLR_RESET}   - SAFEST (recommended). Uploads new/changed files. Deleting here never deletes in Proton."
+echo -e "  [2] ${CLR_BOLD}sync${CLR_RESET}   - Mirror. Proton matches this computer. Deleting here ${CLR_PINK}deletes in Proton${CLR_RESET}."
+echo -e "  [3] ${CLR_BOLD}bisync${CLR_RESET} - Two-way. Changes (and deletions) on either side are copied to the other."
+case "$SYNC_MODE" in sync) cur=2 ;; bisync) cur=3 ;; *) cur=1 ;; esac
+ask "Mode" "$cur"
+case "$REPLY" in 2) SYNC_MODE="sync" ;; 3) SYNC_MODE="bisync" ;; *) SYNC_MODE="copy" ;; esac
+echo -e "${CLR_EMERALD}✓ Mode: $SYNC_MODE${CLR_RESET}"
+
+ask "Files uploaded at the same time (1-16)" "$TRANSFERS"
+[[ "$REPLY" =~ ^[0-9]+$ ]] && (( REPLY >= 1 && REPLY <= 16 )) && TRANSFERS="$REPLY"
+
+ask "Upload speed limit, e.g. 5M or 10M (Enter = no limit, '-' = remove limit)" "$BWLIMIT"
+case "$REPLY" in
+    -) BWLIMIT="" ;;
+    *) if [[ -z "$REPLY" || "$REPLY" =~ ^[0-9.]+[BKMGbkmg]?$ ]]; then BWLIMIT="$REPLY"; else echo "Not a valid limit, keeping '$BWLIMIT'."; fi ;;
+esac
+
+if yes_no "Show a desktop notification after each sync?" "$([[ $NOTIFY == true ]] && echo Y || echo N)"; then
+    NOTIFY=true
+else
+    NOTIFY=false
+fi
+
+# ------------------------------------------------------------------------------
+step_banner "6/6" "Automatic background sync & save"
+# ------------------------------------------------------------------------------
+ENABLE_TIMER=false
+TIMER_INTERVAL="30min"
+if command -v systemctl &>/dev/null && systemctl --user show-environment &>/dev/null; then
+    echo "  [1] Every 15 minutes   [2] Every 30 minutes (recommended)   [3] Every hour"
+    echo "  [4] Every 2 hours      [5] Once a day                       [6] Off (sync by hand)"
+    ask "Choose" "2"
+    case "$REPLY" in
+        1) TIMER_INTERVAL="15min"; ENABLE_TIMER=true ;;
+        3) TIMER_INTERVAL="1h"; ENABLE_TIMER=true ;;
+        4) TIMER_INTERVAL="2h"; ENABLE_TIMER=true ;;
+        5) TIMER_INTERVAL="1d"; ENABLE_TIMER=true ;;
+        6) ENABLE_TIMER=false ;;
+        *) TIMER_INTERVAL="30min"; ENABLE_TIMER=true ;;
+    esac
+else
+    echo -e "${CLR_AMBER}No systemd user session found, so automatic syncing isn't available here.${CLR_RESET}"
+    echo "You can run 'sleepy-proton-sync' by hand or from cron."
+fi
+
+# Rebuild the rclone flags: keep everything except the values set above.
+NEW_FLAGS=()
+for f in "${RCLONE_FLAGS[@]}"; do
+    case "$f" in --transfers=*|--bwlimit=*) ;; *) NEW_FLAGS+=("$f") ;; esac
+done
+NEW_FLAGS=("--transfers=$TRANSFERS" "${NEW_FLAGS[@]}")
+[[ -n "$BWLIMIT" ]] && NEW_FLAGS+=("--bwlimit=$BWLIMIT")
+
+mkdir -p "$(dirname "$CONFIG_FILE")"
+[[ -f "$CONFIG_FILE" ]] && cp -p "$CONFIG_FILE" "$CONFIG_FILE.bak"
+TMP_CONF="$(mktemp "$CONFIG_FILE.XXXXXX")"
+{
+    echo "# =============================================================================="
+    echo "# The Sleepy Labs // Sleepy Proton Drive configuration"
+    echo "# Written by sleepy-proton-wizard on $(date '+%Y-%m-%d %H:%M'). This is a Bash file."
+    echo "# Options explained: https://github.com/DeathTheLoner/sleepy-proton-drive#configuration"
+    echo "# =============================================================================="
+    echo
+    echo "REMOTE_NAME=$(dq "$REMOTE_NAME")"
+    echo "DEVICE_NAME=$(dq "$DEVICE_NAME")"
+    echo
+    echo "SYNC_DIRS=("
+    for d in "${SYNC_DIRS[@]}"; do echo "    $(dq_path "$d")"; done
+    echo ")"
+    echo
+    echo "# copy = safest (never deletes in Proton) | sync = mirror | bisync = two-way"
+    echo "SYNC_MODE=$(dq "$SYNC_MODE")"
+    echo "NOTIFY=$NOTIFY"
+    echo "LOG_FILE=$(dq_path "$LOG_FILE")"
+    echo "LOG_MAX_LINES=$LOG_MAX_LINES"
+    echo
+    echo "RCLONE_FLAGS=("
+    i=0
+    while (( i < ${#NEW_FLAGS[@]} )); do
+        if [[ "${NEW_FLAGS[$i]}" == "--exclude" || "${NEW_FLAGS[$i]}" == "--include" || "${NEW_FLAGS[$i]}" == "--filter" ]] && (( i + 1 < ${#NEW_FLAGS[@]} )); then
+            echo "    $(dq "${NEW_FLAGS[$i]}") $(dq "${NEW_FLAGS[$((i + 1))]}")"
+            i=$((i + 2))
+        else
+            echo "    $(dq "${NEW_FLAGS[$i]}")"
+            i=$((i + 1))
+        fi
+    done
+    echo ")"
+} > "$TMP_CONF"
+bash -n "$TMP_CONF"
+mv "$TMP_CONF" "$CONFIG_FILE"
+echo -e "\n${CLR_EMERALD}✓ Settings saved to $CONFIG_FILE${CLR_RESET}"
+
+if [[ "$ENABLE_TIMER" == "true" ]]; then
+    "$SYNC_BIN" --config "$CONFIG_FILE" --enable-timer "$TIMER_INTERVAL" || \
+        echo -e "${CLR_AMBER}Couldn't turn on the background timer (see above).${CLR_RESET}"
+elif command -v systemctl &>/dev/null; then
+    "$SYNC_BIN" --config "$CONFIG_FILE" --disable-timer >/dev/null 2>&1 || true
+fi
+
+echo -e "\n${CLR_LAVENDER}==============================================================================${CLR_RESET}"
+echo -e "${CLR_EMERALD}${CLR_BOLD}★ All set! ★${CLR_RESET}"
+echo -e "Proton folder:  ${CLR_CYAN}${REMOTE_NAME}:Devices/${DEVICE_NAME}/${CLR_RESET}"
+echo -e "Mode:           ${CLR_CYAN}${SYNC_MODE}${CLR_RESET}"
+echo -e "Automatic sync: ${CLR_CYAN}$([[ "$ENABLE_TIMER" == "true" ]] && echo "every ${TIMER_INTERVAL}" || echo "off")${CLR_RESET}"
+echo -e "Log file:       ${CLR_DIM}${LOG_FILE}${CLR_RESET}"
+echo -e "${CLR_LAVENDER}==============================================================================${CLR_RESET}"
+
+if yes_no "Do a practice run now (dry run: shows what would upload, changes nothing)?" Y; then
+    "$SYNC_BIN" --config "$CONFIG_FILE" --dry-run --no-notify || true
+    if yes_no "Start the real sync now?" N; then
+        "$SYNC_BIN" --config "$CONFIG_FILE" || true
+    fi
+fi
+
+echo -e "\n${CLR_CYAN}Done. Run 'sleepy-proton-gui' any time to change settings.${CLR_RESET}\n"

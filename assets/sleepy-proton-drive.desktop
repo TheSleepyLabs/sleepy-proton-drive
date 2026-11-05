@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Sleepy Proton Drive
+GenericName=Proton Drive Backup
+Comment=Back up your folders to Proton Drive automatically (by The Sleepy Labs)
+Exec=sleepy-proton-gui
+Icon=sleepy-proton-drive
+Terminal=false
+Categories=Utility;Archiving;
+Keywords=proton;drive;cloud;sync;backup;rclone;sleepylabs;
+StartupNotify=true
+StartupWMClass=sleepy-proton-gui
+Actions=SyncNow;OpenWizard;
+
+[Desktop Action SyncNow]
+Name=Sync Now
+Exec=sleepy-proton-sync
+
+[Desktop Action OpenWizard]
+Name=Setup Wizard
+Exec=sleepy-proton-gui --wizard

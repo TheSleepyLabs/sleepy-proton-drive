@@ -4,7 +4,7 @@ Thanks for helping! Bug reports, ideas and pull requests are all welcome.
 
 ## Reporting a bug
 
-[Open an issue](https://github.com/DeathTheLoner/sleepy-proton-drive/issues) with:
+[Open an issue](https://github.com/TheSleepyLabs/sleepy-proton-drive/issues) with:
 
 - your Linux distro and version, and `rclone version`
 - what you did, what you expected, and what happened

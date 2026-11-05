@@ -330,7 +330,7 @@ TMP_CONF="$(mktemp "$CONFIG_FILE.XXXXXX")"
     echo "# =============================================================================="
     echo "# The Sleepy Labs // Sleepy Proton Drive configuration"
     echo "# Written by sleepy-proton-wizard on $(date '+%Y-%m-%d %H:%M'). This is a Bash file."
-    echo "# Options explained: https://github.com/DeathTheLoner/sleepy-proton-drive#configuration"
+    echo "# Options explained: https://github.com/TheSleepyLabs/sleepy-proton-drive#configuration"
     echo "# =============================================================================="
     echo
     echo "REMOTE_NAME=$(dq "$REMOTE_NAME")"

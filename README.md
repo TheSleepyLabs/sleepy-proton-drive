@@ -7,7 +7,7 @@
 **Automatic Proton Drive backups for Linux, with a friendly app and a terminal mode.**
 By [The Sleepy Labs](https://thesleepylabs.net)
 
-[![CI](https://github.com/DeathTheLoner/sleepy-proton-drive/actions/workflows/ci.yml/badge.svg)](https://github.com/DeathTheLoner/sleepy-proton-drive/actions/workflows/ci.yml)
+[![CI](https://github.com/TheSleepyLabs/sleepy-proton-drive/actions/workflows/ci.yml/badge.svg)](https://github.com/TheSleepyLabs/sleepy-proton-drive/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-8b5cf6.svg)](LICENSE)
 [![Platform: Linux](https://img.shields.io/badge/Platform-Linux-38bdf8.svg)](#requirements)
 [![Engine: rclone](https://img.shields.io/badge/Engine-rclone%20%E2%89%A51.63-10b981.svg)](https://rclone.org/protondrive/)
@@ -41,7 +41,7 @@ your Proton Drive automatically in the background. It's built on
 ## Quick start
 
 ```bash
-git clone https://github.com/DeathTheLoner/sleepy-proton-drive.git
+git clone https://github.com/TheSleepyLabs/sleepy-proton-drive.git
 cd sleepy-proton-drive
 ./install.sh
 ```
@@ -161,7 +161,7 @@ files are skipped, and symlinks are not followed.
 | **`command not found: sleepy-proton-gui`** | `~/.local/bin` isn't in your PATH. Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc`, then open a new terminal. |
 | **The app doesn't open** | Run `sleepy-proton-gui` in a terminal to see why. Usually PySide6 is missing: run `sleepy-proton-check --fix`. |
 | **bisync says it needs `--resync`** | rclone stopped to protect your files. Check the log, then delete the marker it names (in `~/.local/state/sleepy-proton-drive/bisync/`) and sync again. |
-| **Anything else** | Check the log (app: 📜 Live Logs, or `~/.local/share/proton-sync.log`) and `sleepy-proton-check`. Still stuck? [Open an issue](https://github.com/DeathTheLoner/sleepy-proton-drive/issues). |
+| **Anything else** | Check the log (app: 📜 Live Logs, or `~/.local/share/proton-sync.log`) and `sleepy-proton-check`. Still stuck? [Open an issue](https://github.com/TheSleepyLabs/sleepy-proton-drive/issues). |
 
 ## Privacy & security
 

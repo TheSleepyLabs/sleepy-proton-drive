@@ -186,7 +186,7 @@ enable_timer() {
     cat > "$SYSTEMD_USER_DIR/$UNIT_NAME.service" <<EOF
 [Unit]
 Description=The Sleepy Labs - Proton Drive Sync Engine
-Documentation=https://github.com/DeathTheLoner/sleepy-proton-drive
+Documentation=https://github.com/TheSleepyLabs/sleepy-proton-drive
 After=network-online.target
 Wants=network-online.target
 
@@ -201,7 +201,7 @@ EOF
     cat > "$SYSTEMD_USER_DIR/$UNIT_NAME.timer" <<EOF
 [Unit]
 Description=The Sleepy Labs - Periodic Proton Drive Sync (every $interval)
-Documentation=https://github.com/DeathTheLoner/sleepy-proton-drive
+Documentation=https://github.com/TheSleepyLabs/sleepy-proton-drive
 
 [Timer]
 OnBootSec=5min

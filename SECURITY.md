@@ -5,7 +5,7 @@
 If you find a security problem in Sleepy Proton Drive (for example a way it could leak a
 password, delete files it shouldn't, or run unexpected commands), please **don't open a public
 issue**. Instead, use GitHub's private
-[**Report a vulnerability**](https://github.com/DeathTheLoner/sleepy-proton-drive/security/advisories/new)
+[**Report a vulnerability**](https://github.com/TheSleepyLabs/sleepy-proton-drive/security/advisories/new)
 form.
 
 Please include what you found, how to reproduce it, and which version you're using

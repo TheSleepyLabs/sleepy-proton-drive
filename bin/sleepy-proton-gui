@@ -33,7 +33,9 @@ try:
     from PySide6.QtGui import QIcon, QColor
 except ImportError:
     # PySide6 may live in the private environment made by "sleepy-proton-check --fix".
-    if VENV_PYTHON.exists() and Path(sys.executable).resolve() != VENV_PYTHON.resolve() \
+    # Compare environments, not interpreter paths: a venv's python is a symlink
+    # to the system python, so resolved paths are always equal.
+    if VENV_PYTHON.exists() and Path(sys.prefix).resolve() != VENV_PYTHON.parent.parent.resolve() \
             and not os.environ.get("SLEEPY_PROTON_REEXEC"):
         os.environ["SLEEPY_PROTON_REEXEC"] = "1"
         os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), os.path.abspath(__file__), *sys.argv[1:]])

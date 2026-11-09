@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 UNIT_NAME="sleepy-proton-sync"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -64,6 +64,11 @@ Sync options:
 
 Info:
       --status             Show the current configuration and timer state
+      --running            Print "running <PID>" if a sync is running, else "idle"
+
+Control a running sync (works for background and app syncs):
+      --stop               Stop the running sync (files already copied are kept)
+      --restart            Stop the running sync and start a fresh one in the background
       --version            Show the version
   -h, --help               Show this help
 
@@ -106,6 +111,9 @@ while [[ $# -gt 0 ]]; do
         --enable-timer=*) ACTION="enable-timer"; TIMER_INTERVAL="${1#*=}"; shift ;;
         --disable-timer) ACTION="disable-timer"; shift ;;
         --timer-status) ACTION="timer-status"; shift ;;
+        --running) ACTION="running"; shift ;;
+        --stop) ACTION="stop"; shift ;;
+        --restart) ACTION="restart"; shift ;;
         --version) echo "sleepy-proton-sync $VERSION"; exit 0 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
@@ -194,6 +202,8 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=$exec_line
 TimeoutStartSec=6h
+# 143 = stopped on purpose (Stop/Restart button), not a failure.
+SuccessExitStatus=143
 Nice=10
 IOSchedulingClass=idle
 EOF
@@ -235,6 +245,78 @@ timer_status() {
         echo "inactive"
     fi
 }
+
+# ------------------------------------------------------------------------------
+# Stop / restart a running sync
+# ------------------------------------------------------------------------------
+running_pid() {
+    local pid
+    pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && echo "$pid"
+    return 0
+}
+
+descendants() {
+    local child
+    for child in $(pgrep -P "$1" 2>/dev/null); do
+        echo "$child"
+        descendants "$child"
+    done
+}
+
+stop_sync() {
+    local pid tree waited=0 stopped=false
+    pid="$(running_pid)"
+    tree=""
+    [[ -n "$pid" ]] && tree="$(descendants "$pid")"
+    # Background sync: let systemd stop it (also marks the run as stopped, not failed).
+    if have_user_systemd && systemctl --user is-active --quiet "$UNIT_NAME.service"; then
+        systemctl --user stop --no-block "$UNIT_NAME.service" &>/dev/null || true
+        stopped=true
+    fi
+    if [[ -n "$pid" ]]; then
+        kill -TERM "$pid" 2>/dev/null || true
+        stopped=true
+        while kill -0 "$pid" 2>/dev/null && (( waited < 30 )); do sleep 0.5; waited=$((waited + 1)); done
+        if kill -0 "$pid" 2>/dev/null; then
+            # Didn't stop politely within 15s: force it, rclone included.
+            kill -KILL "$pid" $tree 2>/dev/null || true
+        fi
+    fi
+    # Anything left over from the stopped run (e.g. rclone after a forced stop).
+    [[ -n "$tree" ]] && kill -TERM $tree 2>/dev/null || true
+    [[ -n "$(running_pid)" ]] || rm -rf "$LOCK_DIR"
+    if [[ "$stopped" == "true" ]]; then
+        echo "Sync stopped. Files already copied are kept."
+    else
+        echo "No sync is running."
+    fi
+}
+
+start_background_sync() {
+    if have_user_systemd && [[ "$CONFIG_FILE" == "$DEFAULT_CONFIG" ]] && \
+            [[ -f "$SYSTEMD_USER_DIR/$UNIT_NAME.service" ]]; then
+        systemctl --user reset-failed "$UNIT_NAME.service" &>/dev/null || true
+        systemctl --user start --no-block "$UNIT_NAME.service"
+    else
+        setsid nohup "$(readlink -f "${BASH_SOURCE[0]}")" --config "$CONFIG_FILE" >/dev/null 2>&1 &
+    fi
+    echo "A fresh sync has started in the background."
+}
+
+case "$ACTION" in
+    running)
+        pid="$(running_pid)"
+        if [[ -n "$pid" ]]; then echo "running $pid"; else echo "idle"; fi
+        exit 0 ;;
+    stop) stop_sync; exit 0 ;;
+    restart)
+        stop_sync >/dev/null
+        # Wait for the old run to let go of the lock (up to 20s).
+        for _ in $(seq 1 40); do [[ -z "$(running_pid)" ]] && break; sleep 0.5; done
+        start_background_sync
+        exit 0 ;;
+esac
 
 case "$ACTION" in
     enable-timer) enable_timer "$TIMER_INTERVAL"; exit 0 ;;

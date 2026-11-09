@@ -119,6 +119,9 @@ Because folders are stored by name, you can't sync two folders with the same nam
 | `sleepy-proton-sync --dry-run` | Show what would change, without changing anything. |
 | `sleepy-proton-sync --mode sync` | Use a different mode for this one run. |
 | `sleepy-proton-sync --status` | Show the current settings and timer. |
+| `sleepy-proton-sync --stop` | Stop the running sync (background or app). Files already copied are kept. |
+| `sleepy-proton-sync --restart` | Stop the running sync and start a fresh one in the background. |
+| `sleepy-proton-sync --running` | Print `running <PID>` or `idle`. |
 | `sleepy-proton-sync --enable-timer 1h` | Turn on background sync (15min, 30min, 1h, 2h, 1d, …). |
 | `sleepy-proton-sync --disable-timer` | Turn off background sync. |
 | `sleepy-proton-check [--fix]` | Check (and fix) requirements and your login. |

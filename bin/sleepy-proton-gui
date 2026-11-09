@@ -17,7 +17,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 VENV_PYTHON = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "sleepy-proton-drive" / "venv" / "bin" / "python"
 
 try:
@@ -276,6 +276,13 @@ QPushButton#btnDanger:hover {
     background: #4a142e;
     color: #ffffff;
     border-color: #fb7185;
+}
+
+/* Greyed out while unavailable (e.g. Sync Now during a background sync). */
+QPushButton#btnPrimary:disabled, QPushButton#btnDanger:disabled {
+    background: #0d0a1a;
+    border: 1px solid #1e1938;
+    color: #5d5475;
 }
 
 /* Inputs */
@@ -1175,7 +1182,10 @@ class MainWindow(QMainWindow):
         self.log_timer = QTimer(self)
         self.log_timer.setInterval(3000)
         self.log_timer.timeout.connect(self.auto_refresh_log)
+        self.log_timer.timeout.connect(self.refresh_running_state)
         self.log_timer.start()
+        self._ctl_proc = None
+        QTimer.singleShot(200, self.refresh_running_state)
 
         # First start: offer the wizard (or open it straight away with --wizard)
         if "--wizard" in sys.argv:
@@ -1326,8 +1336,13 @@ class MainWindow(QMainWindow):
         self.btn_dry_run.setMinimumWidth(150)
         self.btn_dry_run.clicked.connect(lambda: self.run_sync_process(dry_run=True))
 
+        self.btn_restart_sync = QPushButton("🔁 Restart Sync")
+        self.btn_restart_sync.setToolTip("Stop the running sync (if any) and start a fresh one")
+        self.btn_restart_sync.clicked.connect(self.restart_sync_process)
+
         self.btn_cancel_sync = QPushButton("🛑 Stop Sync")
         self.btn_cancel_sync.setObjectName("btnDanger")
+        self.btn_cancel_sync.setToolTip("Stop any running sync, including the automatic background one")
         self.btn_cancel_sync.setEnabled(False)
         self.btn_cancel_sync.clicked.connect(self.cancel_sync_process)
 
@@ -1336,10 +1351,16 @@ class MainWindow(QMainWindow):
 
         h_actions.addWidget(self.btn_sync_now)
         h_actions.addWidget(self.btn_dry_run)
+        h_actions.addWidget(self.btn_restart_sync)
         h_actions.addWidget(self.btn_cancel_sync)
         h_actions.addWidget(self.btn_refresh_stat)
         h_actions.addStretch()
         layout.addLayout(h_actions)
+
+        self.lbl_running = QLabel("")
+        self.lbl_running.setStyleSheet("color: #38bdf8; font-weight: 700; font-size: 12px;")
+        self.lbl_running.hide()
+        layout.addWidget(self.lbl_running)
 
         # Terminal Stream Header & View
         h_term_head = QHBoxLayout()
@@ -1851,9 +1872,13 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------------------------------
     # Sync Execution
     # --------------------------------------------------------------------------
-    def run_sync_process(self, dry_run=False):
+    def run_sync_process(self, dry_run=False, confirmed=False):
         if self.process and self.process.state() == QProcess.Running:
             QMessageBox.information(self, "Sync Active", "A synchronization task is already running in the background.")
+            return
+        if self.background_sync_pid():
+            QMessageBox.information(self, "Sync Active",
+                                    "A background sync is already running. Use Restart Sync to start a fresh one.")
             return
 
         if not SYNC_SCRIPT.exists():
@@ -1861,7 +1886,7 @@ class MainWindow(QMainWindow):
             return
         if not self.save_settings(show_popup=False):
             return
-        if self.config.sync_mode != "copy" and not dry_run:
+        if self.config.sync_mode != "copy" and not dry_run and not confirmed:
             what = ("Files you deleted on this computer will also be DELETED in Proton Drive."
                     if self.config.sync_mode == "sync" else
                     "Deletions on either side will be copied to the other side.")
@@ -1910,11 +1935,93 @@ class MainWindow(QMainWindow):
         self.overview_log_view.insertPlainText(data)
         self.overview_log_view.verticalScrollBar().setValue(self.overview_log_view.verticalScrollBar().maximum())
 
+    def own_sync_running(self):
+        return bool(self.process and self.process.state() != QProcess.NotRunning)
+
+    def background_sync_pid(self):
+        """PID of a sync started outside this window (timer, terminal), or None."""
+        res = run_quiet([str(SYNC_SCRIPT), "--config", str(CONFIG_PATH), "--running"])
+        parts = res.stdout.split()
+        if len(parts) == 2 and parts[0] == "running":
+            own = self.process.processId() if self.own_sync_running() else 0
+            if parts[1] != str(own):
+                return parts[1]
+        return None
+
+    def refresh_running_state(self):
+        if self._ctl_proc and self._ctl_proc.state() != QProcess.NotRunning:
+            return  # a stop/restart is in progress
+        own = self.own_sync_running()
+        bg = None if own else self.background_sync_pid()
+        busy = own or bool(bg)
+        self.btn_cancel_sync.setEnabled(busy)
+        self.btn_restart_sync.setEnabled(True)
+        if not own:
+            self.btn_sync_now.setEnabled(not bg)
+            self.btn_dry_run.setEnabled(not bg)
+        if bg:
+            self.lbl_running.setText("● A background sync is running (started automatically). "
+                                     "Use Stop or Restart to control it; progress is in the Live Logs tab.")
+            self.lbl_running.show()
+        else:
+            self.lbl_running.hide()
+
+    def run_sync_control(self, action, on_done=None):
+        """Run 'sleepy-proton-sync --stop/--restart' without freezing the window."""
+        if self._ctl_proc and self._ctl_proc.state() != QProcess.NotRunning:
+            return
+        self.btn_cancel_sync.setEnabled(False)
+        self.btn_restart_sync.setEnabled(False)
+        self.btn_sync_now.setEnabled(False)
+        self.btn_dry_run.setEnabled(False)
+        self._ctl_proc = QProcess(self)
+        self._ctl_proc.setProcessChannelMode(QProcess.MergedChannels)
+
+        def finished(*_):
+            out = bytes(self._ctl_proc.readAll()).decode("utf-8", "ignore").strip()
+            if out:
+                self.overview_log_view.append(f">>> {out}")
+                self.status_bar.showMessage(out.splitlines()[-1], 5000)
+            self._ctl_proc = None
+            if on_done:
+                on_done()
+            self.refresh_running_state()
+            self.load_full_log()
+            self.update_timer_status()
+
+        self._ctl_proc.finished.connect(finished)
+        self._ctl_proc.errorOccurred.connect(lambda err: err == QProcess.FailedToStart and finished())
+        self._ctl_proc.start(str(SYNC_SCRIPT), ["--config", str(CONFIG_PATH), f"--{action}"])
+
     def cancel_sync_process(self):
-        if self.process and self.process.state() == QProcess.Running:
-            self.process.terminate()
-            self.overview_log_view.append("\n>>> Termination signal sent to sync engine.")
-            self.status_bar.showMessage("Sync process cancelled.", 4000)
+        self.tabs.setCurrentIndex(0)
+        self.overview_log_view.append("\n>>> Stopping the sync...")
+        # Stops the window's own sync and any background one (the engine handles both).
+        self.run_sync_control("stop")
+
+    def restart_sync_process(self):
+        self.tabs.setCurrentIndex(0)
+        if self.config.sync_mode != "copy":
+            what = ("Files you deleted on this computer will also be DELETED in Proton Drive."
+                    if self.config.sync_mode == "sync" else
+                    "Deletions on either side will be copied to the other side.")
+            if QMessageBox.question(
+                    self, "Check before syncing",
+                    f"Mode is '{self.config.sync_mode}'. {what}\n\nRestart the sync?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+                return
+        if not self.save_settings(show_popup=False):
+            return
+        self.overview_log_view.append("\n>>> Restarting the sync (stop, then start fresh)...")
+        if self.own_sync_running():
+            # Stop our own run first, then start a fresh one here so its output shows live.
+            def start_fresh():
+                if self.own_sync_running():
+                    self.process.waitForFinished(20000)
+                self.run_sync_process(dry_run=False, confirmed=True)
+            self.run_sync_control("stop", on_done=start_fresh)
+        else:
+            self.run_sync_control("restart")
 
     def on_sync_finished(self, exit_code, exit_status):
         self.btn_sync_now.setEnabled(True)

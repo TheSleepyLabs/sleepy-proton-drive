@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-11-09
+
+### Added
+- **Restart Sync** button: stops the running sync and starts a fresh one.
+- `sleepy-proton-sync --stop`, `--restart` and `--running` to control a sync from the terminal.
+- The app shows when an automatic background sync is running.
+
+### Fixed
+- **Stop Sync** only stopped syncs started from the app window. It now stops background
+  (timer) syncs too.
+- The app wouldn't open when PySide6 was in its private environment (fresh installs).
+- A stopped background sync showed as "failed" in systemd.
+- Sync Now and Stop Sync looked clickable while they were turned off.
+
 ## [1.1.0] - 2026-11-05
 
 Review and hardening release, ready for public use.

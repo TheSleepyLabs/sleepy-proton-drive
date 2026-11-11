@@ -25,6 +25,9 @@ your Proton Drive automatically in the background. It's built on
 - **Safety checks**: dry-run preview, and folders that are empty (for example an unplugged
   drive) are skipped in mirror/two-way mode so they can't wipe your cloud copy.
 - **Exclude folders**: back up `~/Documents` but leave out `~/Documents/Old stuff`.
+- **Proton Photos download**: save the photos from your phone (or uploaded by hand) to this
+  computer, sorted into `Year/Month` folders, with the same three modes. Pick categories
+  (videos, RAW, screenshots…) and years/months. See [Proton Photos](#proton-photos).
 - **Dashboard**: Sync Now, Dry-Run, Stop, live log, folder manager, speed limits and skip rules.
 
 > [!NOTE]
@@ -77,6 +80,7 @@ sync to see exactly what will happen.
 | Bash 4.4+ | Sync engine & wizard | Included in every current distro. |
 | Python 3.9+ and PySide6 | Only for the app | Installed from your distro, or into a private folder (`~/.local/share/sleepy-proton-drive/venv`) if your distro doesn't package it. The terminal tools work without it. |
 | systemd (user session) | Only for background sync | Without it, sync by hand or from cron. |
+| Proton's [`proton-drive`](https://proton.me/drive/download) tool | Only for Proton Photos | One click in the app's 📷 Photos tab (or `sleepy-proton-photos --install-cli`) downloads Proton's official tool to `~/.local/bin` and checks it against a known SHA-512 checksum. |
 | `notify-send`, `xdg-open` | Optional | Desktop notifications and "open folder" buttons. |
 
 Check everything at any time with `sleepy-proton-check` (or `./check-requirements.sh`), and add
@@ -93,6 +97,43 @@ Check everything at any time with `sleepy-proton-check` (or `./check-requirement
 The first `bisync` run of each folder sets a baseline automatically (rclone's `--resync`). In
 `sync` and `bisync` mode, a folder that is completely empty is skipped, so an unmounted drive
 can't wipe your backup.
+
+## Proton Photos
+
+The **📷 Photos** tab downloads your Proton Photos library (from the Proton Drive phone app,
+or uploaded at [drive.proton.me/photos](https://drive.proton.me/photos)) to this computer.
+It uses Proton's own official `proton-drive` command-line tool, because rclone can't see
+Photos.
+
+1. **Install Proton's tool** and **Sign In** (opens your browser once; the login is kept in
+   your desktop's keyring).
+2. Pick **where to save** them (default `~/Pictures/Proton Photos`) and a **mode**.
+3. Pick **what to download**: categories, and **Load Dates & Counts from Proton** to pick
+   years or months. Untick *Everything* / *All dates* to choose.
+4. Click **Preview** to see what would happen, then **Download Photos Now**. Tick
+   *Download automatically* to include Photos in every background sync.
+
+Photos are saved by the date they were taken: `Proton Photos/2026/11 November/IMG_0001.jpg`.
+
+| Mode | New photos in Proton | Delete a photo in Proton… | Delete a photo on this computer… |
+|---|---|---|---|
+| `copy` *(default)* | Downloaded | …it stays on this computer. | …it isn't downloaded again. |
+| `sync` (mirror) | Downloaded | …it moves to this computer's trash. | …it's downloaded again. |
+| `bisync` (two-way) | Downloaded | …it moves to this computer's trash. | …it moves to **Proton's trash** (restorable for 30 days). |
+
+Safety checks: if the Photos folder is missing or empty (an unplugged drive), or if a run would
+delete more than a quarter of your photos (at least 20), nothing is deleted and you get a
+warning. Photos you untick in the settings are left on this computer, not deleted. Keep the
+Photos folder **outside** your backed-up folders, or the photos get uploaded to Drive a second
+time (the app warns you).
+
+```bash
+sleepy-proton-photos --dry-run       # preview
+sleepy-proton-photos                 # download now (uses the settings above)
+sleepy-proton-photos --status        # is Proton's tool installed and signed in?
+sleepy-proton-photos --index-only    # refresh the counts shown in the app
+sleepy-proton-photos --reset         # forget what was downloaded (files are kept)
+```
 
 ## Where your files go
 
@@ -125,6 +166,7 @@ Because folders are stored by name, you can't sync two folders with the same nam
 | `sleepy-proton-sync --running` | Print `running <PID>` or `idle`. |
 | `sleepy-proton-sync --enable-timer 1h` | Turn on background sync (15min, 30min, 1h, 2h, 1d, …). |
 | `sleepy-proton-sync --disable-timer` | Turn off background sync. |
+| `sleepy-proton-photos` | Download Proton Photos now (see [Proton Photos](#proton-photos)). |
 | `sleepy-proton-check [--fix]` | Check (and fix) requirements and your login. |
 | `./uninstall.sh [--purge]` | Remove the app. `--purge` also removes settings and logs. |
 
@@ -166,6 +208,8 @@ files are skipped, and symlinks are not followed.
 | **`command not found: sleepy-proton-gui`** | `~/.local/bin` isn't in your PATH. Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc`, then open a new terminal. |
 | **The app doesn't open** | Run `sleepy-proton-gui` in a terminal to see why. Usually PySide6 is missing: run `sleepy-proton-check --fix`. |
 | **bisync says it needs `--resync`** | rclone stopped to protect your files. Check the log, then delete the marker it names (in `~/.local/state/sleepy-proton-drive/bisync/`) and sync again. |
+| **Photos: "You need to login first"** | Click **Sign In** in the 📷 Photos tab (or run `proton-drive auth login`). |
+| **Photos: "SAFETY STOP"** | A run wanted to delete a lot of photos at once. Check the Photos folder is there, then either fix it or run `sleepy-proton-photos --allow-mass-delete` once. |
 | **Anything else** | Check the log (app: 📜 Live Logs, or `~/.local/share/proton-sync.log`) and `sleepy-proton-check`. Still stuck? [Open an issue](https://github.com/TheSleepyLabs/sleepy-proton-drive/issues). |
 
 ## Privacy & security

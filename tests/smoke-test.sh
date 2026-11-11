@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE="$ROOT/bin/sleepy-proton-sync"
 T="$(mktemp -d)"
-trap 'rm -rf "$T"' EXIT
+trap '[[ -n "${KEEP:-}" ]] || rm -rf "$T"' EXIT
 
 export HOME="$T/home" XDG_RUNTIME_DIR="$T/run" XDG_CONFIG_HOME="$T/home/.config"
 export XDG_STATE_HOME="$T/home/.local/state" RCLONE_CONFIG="$T/rclone.conf"
@@ -85,6 +85,76 @@ echo e > "$W/skip me [x]/new.txt"
 "$ENGINE" -c "$T/ex.conf" --mode bisync >/dev/null
 check "two-way mode skips the excluded folder both ways" '[[ ! -e "$WC/skip me [x]" && "$(cat "$W/Old/old.txt")" == d ]]'
 grep -q "Excluded folders" <<< "$("$ENGINE" -c "$T/ex.conf" --status)" && ok "--status lists excluded folders" || fail "--status excluded"
+
+# Proton Photos, against a fake Proton (tests/fake-proton-drive).
+PHOTOS="$ROOT/bin/sleepy-proton-photos"
+export PROTON_DRIVE_BIN="$ROOT/tests/fake-proton-drive" FAKE_PROTON_DIR="$T/fakeproton" XDG_CACHE_HOME="$T/home/.cache"
+mkdir -p "$FAKE_PROTON_DIR"
+cat > "$FAKE_PROTON_DIR/photos.json" <<'JSON'
+[{"uid":"u1","name":"IMG_1.jpg","captureTime":"2026-11-09T02:38:45.000Z","tags":[],"content":"one"},
+ {"uid":"u2","name":"clip.mp4","captureTime":"2026-11-09T03:00:00.000Z","tags":[2],"content":"video"},
+ {"uid":"u3","name":"IMG_1.jpg","captureTime":"2026-11-20T03:00:00.000Z","tags":[],"content":"same name"},
+ {"uid":"u4","name":"raw.dng","captureTime":"2025-03-01T03:00:00.000Z","tags":[9],"content":"raw"},
+ {"uid":"u5","name":"old.jpg","captureTime":"2024-06-15T03:00:00.000Z","tags":[0],"content":"fav"}]
+JSON
+P="$HOME/Pictures/Proton Photos"
+pconf() { # mode, categories, dates
+    cat > "$T/ph.conf" <<CONF
+REMOTE_NAME="protondrive"
+DEVICE_NAME="TestBox"
+SYNC_DIRS=()
+NOTIFY=false
+PHOTOS_ENABLED=true
+PHOTOS_MODE="$1"
+PHOTOS_CATEGORIES=($2)
+PHOTOS_DATES=($3)
+CONF
+}
+nov="$(TZ=${TZ:-} date -d 2026-11-09T02:38:45Z +'%Y/%m %B')"
+pconf copy "" ""
+"$PHOTOS" -c "$T/ph.conf" --dry-run >/dev/null
+check "photos dry run downloads nothing" '[[ ! -e "$P" ]]'
+"$PHOTOS" -c "$T/ph.conf" >/dev/null
+check "photos land in Year/Month folders" '[[ "$(cat "$P/$nov/IMG_1.jpg")" == one && -f "$P/$nov/clip.mp4" && -f "$P/2025/03 March/raw.dng" ]]'
+check "same-named photos are both kept" '[[ "$(cat "$P/2026/11 November/IMG_1.jpg")" == one && "$(cat "$P/2026/11 November/IMG_1 (2).jpg")" == "same name" ]]'
+check "photo file date = capture date" '[[ "$(date -r "$P/2024/06 June/old.jpg" +%Y-%m-%d)" == 2024-06-1[45] ]]'
+check "photo counts saved for the app" 'grep -q "\"total\": 5" "$XDG_CACHE_HOME/sleepy-proton-drive/photos-index.json"'
+rm "$P/2025/03 March/raw.dng"
+"$PHOTOS" -c "$T/ph.conf" >/dev/null
+check "copy mode: deleted here is not downloaded again or deleted in Proton" '[[ ! -e "$P/2025/03 March/raw.dng" ]] && grep -q u4 "$FAKE_PROTON_DIR/photos.json"'
+
+rm -rf "$P" "$HOME/.local/state/sleepy-proton-drive/photos"
+pconf copy '"videos" "raw"' ""
+"$PHOTOS" -c "$T/ph.conf" >/dev/null
+check "category filter (videos + raw only)" '[[ -f "$P/$nov/clip.mp4" && -f "$P/2025/03 March/raw.dng" && ! -e "$P/$nov/IMG_1.jpg" && ! -e "$P/2024" ]]'
+rm -rf "$P" "$HOME/.local/state/sleepy-proton-drive/photos"
+pconf copy "" '"2024" "2026-11"'
+"$PHOTOS" -c "$T/ph.conf" >/dev/null
+check "date filter (a year + a month)" '[[ -f "$P/2024/06 June/old.jpg" && -f "$P/$nov/clip.mp4" && ! -e "$P/2025" ]]'
+
+rm -rf "$P" "$HOME/.local/state/sleepy-proton-drive/photos"
+pconf sync "" ""
+"$PHOTOS" -c "$T/ph.conf" >/dev/null
+rm "$P/2024/06 June/old.jpg"
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); json.dump([p for p in d if p["uid"]!="u2"], open(f,"w"))' "$FAKE_PROTON_DIR/photos.json"
+"$PHOTOS" -c "$T/ph.conf" >/dev/null
+check "mirror: deleted in Proton -> removed here" '[[ ! -e "$P/$nov/clip.mp4" ]]'
+check "mirror: deleted here -> downloaded again" '[[ -f "$P/2024/06 June/old.jpg" ]]'
+
+pconf bisync "" ""
+rm "$P/2024/06 June/old.jpg"
+"$PHOTOS" -c "$T/ph.conf" >/dev/null
+check "two-way: deleted here -> moved to Proton's trash" '! grep -q u5 "$FAKE_PROTON_DIR/photos.json" && grep -q u5 "$FAKE_PROTON_DIR/trash.json"'
+mv "$P" "$P.unplugged"
+"$PHOTOS" -c "$T/ph.conf" >/dev/null && fail "missing folder not caught" || true
+check "two-way: missing photo folder trashes nothing in Proton" 'grep -q u1 "$FAKE_PROTON_DIR/photos.json" && grep -q u3 "$FAKE_PROTON_DIR/photos.json"'
+mv "$P.unplugged" "$P"
+rm "$P/$nov/IMG_1.jpg" "$P/$nov/IMG_1 (2).jpg"
+SLEEPY_PHOTOS_MASS_MIN=1 "$PHOTOS" -c "$T/ph.conf" >/dev/null || true
+check "two-way: safety stop blocks mass deletes in Proton" 'grep -q u1 "$FAKE_PROTON_DIR/photos.json" && grep -q "SAFETY STOP" "$HOME/.local/share/proton-sync.log"'
+FAKE_PROTON_LOGGED_OUT=1 "$PHOTOS" -c "$T/ph.conf" >/dev/null && fail "signed-out not reported" || ok "signed out of Proton is reported as an error"
+"$ENGINE" -c "$T/ph.conf" >/dev/null
+check "background sync runs Proton Photos too" 'grep -q "Proton Photos OK" "$HOME/.local/share/proton-sync.log"'
 
 "$ENGINE" --mode nonsense >/dev/null 2>&1 && fail "bad mode accepted" || ok "rejects an unknown mode"
 grep -q "TestBox" <<< "$("$ENGINE" --status)" && ok "--status works" || fail "--status"

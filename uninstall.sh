@@ -54,7 +54,8 @@ command -v systemctl &>/dev/null && systemctl --user daemon-reload &>/dev/null |
 
 # 2. Programs (+ v1.0 aliases that point at them)
 rm -f "$BIN_DIR/sleepy-proton-sync" "$BIN_DIR/sleepy-proton-gui" \
-      "$BIN_DIR/sleepy-proton-wizard" "$BIN_DIR/sleepy-proton-check"
+      "$BIN_DIR/sleepy-proton-wizard" "$BIN_DIR/sleepy-proton-check" \
+      "$BIN_DIR/sleepy-proton-photos"
 for old in proton-sync proton-sync-gui setup-proton-rclone; do
     if [[ -L "$BIN_DIR/$old" ]] && [[ "$(readlink "$BIN_DIR/$old")" == *sleepy-proton-* ]]; then
         rm -f "$BIN_DIR/$old"
@@ -76,7 +77,8 @@ command -v update-desktop-database &>/dev/null && update-desktop-database "$DATA
 if [[ "$PURGE" == "true" ]]; then
     rm -f "$CONFIG_HOME/proton-sync.conf" "$CONFIG_HOME/proton-sync.conf.bak" \
           "$DATA_HOME/proton-sync.log"
-    rm -rf "$STATE_HOME/sleepy-proton-drive" "$DATA_HOME/sleepy-proton-drive"
+    rm -rf "$STATE_HOME/sleepy-proton-drive" "$DATA_HOME/sleepy-proton-drive" \
+           "${XDG_CACHE_HOME:-$HOME/.cache}/sleepy-proton-drive"
     echo "✓ Settings, log and saved state removed."
 fi
 
@@ -85,3 +87,7 @@ if [[ "$PURGE" == "false" ]]; then
     echo "  Your settings (~/.config/proton-sync.conf) were kept. Use --purge to remove them too."
 fi
 echo "  Your Proton login is still saved in rclone. Remove it with: rclone config delete protondrive"
+if [[ -x "$BIN_DIR/proton-drive" ]]; then
+    echo "  Proton's own proton-drive tool (used for Photos) was kept in $BIN_DIR."
+    echo "  Remove it with: proton-drive auth logout && rm $BIN_DIR/proton-drive"
+fi

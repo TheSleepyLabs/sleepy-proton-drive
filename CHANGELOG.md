@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] - 2026-11-12
+
+### Added
+- **Proton Photos download**: a new 📷 Photos tab (and `sleepy-proton-photos`) saves your Proton
+  Photos library to this computer in `Year/Month` folders (default `~/Pictures/Proton Photos`),
+  using Proton's official `proton-drive` tool (installed and checksum-verified from the app).
+  - Same three modes: `copy`, `sync` (mirror: deleted in Proton → trash here) and `bisync`
+    (two-way: deleted here → Proton's trash, restorable for 30 days).
+  - Choose categories (regular photos, videos, RAW, screenshots, favourites, live/motion
+    photos, selfies, portraits, bursts, panoramas) and years/months, with counts from Proton.
+  - Runs as part of every background sync when *Download automatically* is ticked; Stop and
+    Restart cover it too.
+  - Safety stops for a missing/empty Photos folder and for mass deletions.
+- The app's minimum window size is 900×600 so the tabs always fit.
+
+### Changed
+- The terminal wizard keeps your Photos settings when it rewrites the config.
+
 ## [1.3.0] - 2026-11-12
 
 ### Added

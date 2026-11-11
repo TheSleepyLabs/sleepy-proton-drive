@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 UNIT_NAME="sleepy-proton-sync"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -28,6 +28,7 @@ DEVICE_NAME=""
 SYNC_DIRS=("$HOME/Documents")
 EXCLUDE_DIRS=()
 SYNC_MODE="copy"
+PHOTOS_ENABLED=false
 NOTIFY=true
 LOG_FILE="$HOME/.local/share/proton-sync.log"
 LOG_MAX_LINES=5000
@@ -364,6 +365,11 @@ case "$ACTION" in
             echo "  Excluded folders (never backed up):"
             for d in "${EXCLUDE_DIRS[@]}"; do echo "    - $(expand_path "$d")"; done
         fi
+        if [[ "$PHOTOS_ENABLED" == "true" ]]; then
+            echo "  Proton Photos: on (${PHOTOS_MODE:-copy}) -> ${PHOTOS_DIR:-$HOME/Pictures/Proton Photos}"
+        else
+            echo "  Proton Photos: off"
+        fi
         echo "  Log:    $LOG_FILE"
         echo "  Timer:  $(timer_status)"
         exit 0 ;;
@@ -443,7 +449,7 @@ if ! grep -qxF "${REMOTE_NAME}:" <<< "$(rclone listremotes 2>/dev/null)"; then
     exit 1
 fi
 
-if [[ ${#SYNC_DIRS[@]} -eq 0 ]]; then
+if [[ ${#SYNC_DIRS[@]} -eq 0 && "$PHOTOS_ENABLED" != "true" ]]; then
     log "Nothing to do: no folders are selected (SYNC_DIRS is empty)."
     exit 0
 fi
@@ -542,9 +548,33 @@ for raw_dir in "${SYNC_DIRS[@]}"; do
     fi
 done
 
+# Proton Photos (downloads phone/uploaded photos into a local folder).
+if [[ "$PHOTOS_ENABLED" == "true" ]]; then
+    PHOTOS_BIN="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sleepy-proton-photos"
+    if [[ -x "$PHOTOS_BIN" ]]; then
+        log ">>> Proton Photos"
+        photo_args=(--config "$CONFIG_FILE" --no-notify)
+        [[ "$DRY_RUN" == "true" ]] && photo_args+=(--dry-run)
+        rc=0
+        # The photos tool writes to the log itself; run it in the background so Stop works.
+        "$PHOTOS_BIN" "${photo_args[@]}" >/dev/null 2>&1 &
+        CHILD_PID=$!
+        wait "$CHILD_PID" || rc=$?
+        CHILD_PID=""
+        if [[ $rc -eq 0 ]]; then
+            TOTAL_OK=$((TOTAL_OK + 1))
+        else
+            log "FAILED: Proton Photos (exit code $rc). See the lines above."
+            TOTAL_FAILED=$((TOTAL_FAILED + 1))
+        fi
+    else
+        log "WARNING: Proton Photos is on, but sleepy-proton-photos is missing. Reinstall Sleepy Proton Drive."
+    fi
+fi
+
 log "========================================================================"
 if [[ $TOTAL_FAILED -eq 0 ]]; then
-    log "SUCCESS: $TOTAL_OK folder(s) synced, $TOTAL_SKIPPED skipped.$RUN_LABEL"
+    log "SUCCESS: $TOTAL_OK folder(s)/Photos synced, $TOTAL_SKIPPED skipped.$RUN_LABEL"
     [[ "$DRY_RUN" == "true" ]] || send_notification "Proton Drive synced" "$TOTAL_OK folder(s) backed up." low
     log "========================================================================"
     exit 0

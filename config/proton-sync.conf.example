@@ -38,6 +38,20 @@ EXCLUDE_DIRS=()
 #              including deletions. The first run sets a baseline automatically.
 SYNC_MODE="copy"
 
+# Proton Photos download (needs Proton's proton-drive tool; easiest in the app's
+# Photos tab). Photos are saved as <PHOTOS_DIR>/<year>/<MM Month>/<file>.
+#   PHOTOS_MODE: "copy"   = download only (deleting here or in Proton changes nothing else)
+#                "sync"   = this folder matches Proton Photos (deleted in Proton -> trash here)
+#                "bisync" = two-way (also: deleted here -> Proton's trash, 30 days)
+PHOTOS_ENABLED=false
+PHOTOS_DIR="$HOME/Pictures/Proton Photos"
+PHOTOS_MODE="copy"
+# Empty = everything. Categories: other (regular photos) favorites screenshots videos
+# live-photos motion-photos selfies portraits bursts panoramas raw. Example: ("videos" "raw")
+PHOTOS_CATEGORIES=()
+# Empty = all dates. Whole years or single months, e.g. ("2025" "2026-11").
+PHOTOS_DATES=()
+
 # Desktop notifications when a sync finishes (needs notify-send).
 NOTIFY=true
 

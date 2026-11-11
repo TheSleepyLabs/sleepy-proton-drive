@@ -43,6 +43,11 @@ DEVICE_NAME=""
 SYNC_DIRS=("$HOME/Documents" "$HOME/Pictures")
 EXCLUDE_DIRS=()
 SYNC_MODE="copy"
+PHOTOS_ENABLED=false
+PHOTOS_DIR="$HOME/Pictures/Proton Photos"
+PHOTOS_MODE="copy"
+PHOTOS_CATEGORIES=()
+PHOTOS_DATES=()
 NOTIFY=true
 LOG_FILE="$HOME/.local/share/proton-sync.log"
 LOG_MAX_LINES=5000
@@ -75,6 +80,12 @@ dq() {
     local s="$1"
     s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//\$/\\\$}"; s="${s//\`/\\\`}"
     printf '"%s"' "$s"
+}
+# Several values, quoted and separated by spaces.
+dq_list() {
+    local out="" v
+    for v in "$@"; do out+="${out:+ }$(dq "$v")"; done
+    printf '%s' "$out"
 }
 # Same, but keep $HOME as a variable so the config works if the home folder moves.
 dq_path() {
@@ -384,6 +395,17 @@ TMP_CONF="$(mktemp "$CONFIG_FILE.XXXXXX")"
     echo
     echo "# copy = safest (never deletes in Proton) | sync = mirror | bisync = two-way"
     echo "SYNC_MODE=$(dq "$SYNC_MODE")"
+    echo
+    echo "# Proton Photos download (set up in the app's Photos tab; kept as-is by this wizard)."
+    echo "# copy = download only | sync = this folder matches Proton Photos | bisync = two-way"
+    echo "PHOTOS_ENABLED=$([[ "$PHOTOS_ENABLED" == "true" ]] && echo true || echo false)"
+    echo "PHOTOS_DIR=$(dq_path "$PHOTOS_DIR")"
+    echo "PHOTOS_MODE=$(dq "$PHOTOS_MODE")"
+    echo "# Empty = everything. Categories: other favorites screenshots videos live-photos"
+    echo "# motion-photos selfies portraits bursts panoramas raw. Dates: \"2026\" or \"2026-11\"."
+    echo "PHOTOS_CATEGORIES=($(dq_list "${PHOTOS_CATEGORIES[@]}"))"
+    echo "PHOTOS_DATES=($(dq_list "${PHOTOS_DATES[@]}"))"
+    echo
     echo "NOTIFY=$NOTIFY"
     echo "LOG_FILE=$(dq_path "$LOG_FILE")"
     echo "LOG_MAX_LINES=$LOG_MAX_LINES"
@@ -416,6 +438,7 @@ echo -e "\n${CLR_LAVENDER}======================================================
 echo -e "${CLR_EMERALD}${CLR_BOLD}★ All set! ★${CLR_RESET}"
 echo -e "Proton folder:  ${CLR_CYAN}${REMOTE_NAME}:Devices/${DEVICE_NAME}/${CLR_RESET}"
 echo -e "Mode:           ${CLR_CYAN}${SYNC_MODE}${CLR_RESET}"
+echo -e "Proton Photos:  ${CLR_CYAN}$([[ "$PHOTOS_ENABLED" == "true" ]] && echo "on → ${PHOTOS_DIR} (${PHOTOS_MODE})" || echo "off (turn on in the app's Photos tab)")${CLR_RESET}"
 echo -e "Automatic sync: ${CLR_CYAN}$([[ "$ENABLE_TIMER" == "true" ]] && echo "every ${TIMER_INTERVAL}" || echo "off")${CLR_RESET}"
 echo -e "Log file:       ${CLR_DIM}${LOG_FILE}${CLR_RESET}"
 echo -e "${CLR_LAVENDER}==============================================================================${CLR_RESET}"

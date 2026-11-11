@@ -93,6 +93,7 @@ echo -e "\n${CLR_CYAN}>>> Installing programs to $BIN_DIR${CLR_RESET}"
 install -m 755 "$SCRIPT_DIR/bin/sleepy-proton-sync"   "$BIN_DIR/sleepy-proton-sync"
 install -m 755 "$SCRIPT_DIR/bin/sleepy-proton-wizard" "$BIN_DIR/sleepy-proton-wizard"
 install -m 755 "$SCRIPT_DIR/bin/sleepy-proton-gui"    "$BIN_DIR/sleepy-proton-gui"
+install -m 755 "$SCRIPT_DIR/bin/sleepy-proton-photos" "$BIN_DIR/sleepy-proton-photos"
 install -m 755 "$SCRIPT_DIR/check-requirements.sh"    "$BIN_DIR/sleepy-proton-check"
 
 # Clean up command aliases made by v1.0 (only when they point at our programs).

@@ -1,0 +1,551 @@
+#!/usr/bin/env python3
+"""
+==============================================================================
+The Sleepy Labs // Sleepy Proton Drive - Proton Photos downloader
+==============================================================================
+Downloads your Proton Photos (photos and videos from your phone, or uploaded
+by hand) into a folder on this computer, arranged as Year/Month, using
+Proton's official Proton Drive CLI ("proton-drive").
+
+Modes (PHOTOS_MODE in ~/.config/proton-sync.conf):
+  copy   - download new photos; nothing is ever deleted anywhere
+  sync   - mirror: this folder matches Proton Photos (photos deleted in
+           Proton are moved to this computer's trash)
+  bisync - two-way: like sync, and photos you delete here are moved to
+           Proton's trash (recoverable there for 30 days)
+==============================================================================
+"""
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+VERSION = "1.4.0"
+HOME = Path.home()
+CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
+STATE_HOME = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local" / "state")
+CACHE_HOME = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache")
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
+DEFAULT_CONFIG = Path(os.environ.get("PROTON_SYNC_CONFIG") or CONFIG_HOME / "proton-sync.conf")
+STATE_DIR = STATE_HOME / "sleepy-proton-drive" / "photos"
+INDEX_FILE = CACHE_HOME / "sleepy-proton-drive" / "photos-index.json"
+LOCK_DIR = RUNTIME_DIR / f"sleepy-proton-photos-{os.getuid()}.lock"
+STAGING_NAME = ".sleepy-proton-staging"
+
+# Proton Photos categories (the tag numbers Proton uses) + "other" = no category.
+CATEGORIES = {
+    "favorites": 0, "screenshots": 1, "videos": 2, "live-photos": 3,
+    "motion-photos": 4, "selfies": 5, "portraits": 6, "bursts": 7,
+    "panoramas": 8, "raw": 9,
+}
+OTHER = "other"
+MONTHS = ["January", "February", "March", "April", "May", "June", "July",
+          "August", "September", "October", "November", "December"]
+BATCH = 25
+MASS_DELETE_MIN = int(os.environ.get("SLEEPY_PHOTOS_MASS_MIN", "20"))  # never block fewer deletions than this...
+MASS_DELETE_SHARE = 0.25  # ...but block more than 25% of tracked photos in one run
+
+_DUMP = r"""
+PHOTOS_ENABLED=false; PHOTOS_DIR="$HOME/Pictures/Proton Photos"; PHOTOS_MODE=copy
+PHOTOS_CATEGORIES=(); PHOTOS_DATES=(); NOTIFY=true
+LOG_FILE="$HOME/.local/share/proton-sync.log"
+source "$1" >/dev/null 2>&1 || exit 3
+printf '%s\0' "$PHOTOS_ENABLED" "$PHOTOS_DIR" "$PHOTOS_MODE" "$NOTIFY" "$LOG_FILE"
+printf '%s\0' "${#PHOTOS_CATEGORIES[@]}" "${PHOTOS_CATEGORIES[@]}"
+printf '%s\0' "${#PHOTOS_DATES[@]}" "${PHOTOS_DATES[@]}"
+"""
+
+
+class Stop(Exception):
+    pass
+
+
+class Config:
+    def __init__(self, path: Path):
+        self.enabled = False
+        self.dir = HOME / "Pictures" / "Proton Photos"
+        self.mode = "copy"
+        self.notify = True
+        self.log_file = HOME / ".local" / "share" / "proton-sync.log"
+        self.categories = []
+        self.dates = []
+        if not path.exists():
+            return
+        res = subprocess.run(["bash", "-c", _DUMP, "_", str(path)], capture_output=True, text=True, timeout=15)
+        if res.returncode != 0:
+            raise SystemExit(f"Error: couldn't read {path} (is it valid Bash?)")
+        v = res.stdout.split("\0")
+        self.enabled = v[0].strip().lower() == "true"
+        self.dir = Path(os.path.expanduser(v[1] or str(self.dir))).absolute()
+        self.mode = v[2] if v[2] in ("copy", "sync", "bisync") else "copy"
+        self.notify = v[3].strip().lower() == "true"
+        self.log_file = Path(os.path.expanduser(v[4] or str(self.log_file)))
+        i = 5
+        n = int(v[i]); self.categories = [c.strip().lower() for c in v[i + 1:i + 1 + n] if c.strip()]; i += 1 + n
+        n = int(v[i]); self.dates = [d.strip() for d in v[i + 1:i + 1 + n] if d.strip()]
+
+
+class Runner:
+    def __init__(self, cfg: Config, dry_run: bool, allow_mass_delete: bool, quiet_notify: bool):
+        self.cfg = cfg
+        self.dry = dry_run
+        self.allow_mass = allow_mass_delete
+        self.notify_on = cfg.notify and not quiet_notify
+        self.child = None
+        self.cli = find_cli()
+        key = hashlib.sha1(str(cfg.dir).encode()).hexdigest()[:12]
+        self.state_file = STATE_DIR / f"state-{key}.json"
+        self.state = {"version": 1, "dir": str(cfg.dir), "photos": {}}
+        self.counts = {"downloaded": 0, "failed": 0, "trashed_here": 0, "trashed_proton": 0}
+
+    # ---------------------------------------------------------------- logging
+    def log(self, msg: str):
+        line = f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
+        print(line, flush=True)
+        try:
+            self.cfg.log_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.cfg.log_file, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+
+    def notify(self, title, body, urgency="normal"):
+        if self.notify_on and shutil.which("notify-send"):
+            subprocess.run(["notify-send", "-a", "Sleepy Proton Drive", "-i", "sleepy-proton-drive",
+                            "-u", urgency, title, body], capture_output=True)
+
+    # -------------------------------------------------------------- the CLI
+    def cli_run(self, args, timeout=3600):
+        if not self.cli:
+            raise RuntimeError("Proton's 'proton-drive' tool isn't installed. Install it from the app "
+                               "(Proton Photos tab) or with: sleepy-proton-photos --install-cli")
+        self.child = subprocess.Popen([self.cli, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            out, err = self.child.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.child.kill()
+            out, err = self.child.communicate()
+            raise RuntimeError(f"proton-drive {' '.join(args[:2])} took too long and was stopped.")
+        finally:
+            rc = self.child.returncode if self.child else 1
+            self.child = None
+        if "You need to login first" in (out + err):
+            raise RuntimeError("Not signed in to Proton Photos. Click 'Sign In' on the Proton Photos tab "
+                               "(or run: proton-drive auth login).")
+        return rc, out, err
+
+    def cli_json(self, args, timeout=3600):
+        rc, out, err = self.cli_run([*args, "--json"], timeout)
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError:
+            msg = (err or out).strip().splitlines()
+            raise RuntimeError(f"proton-drive {' '.join(args[:2])} failed: {msg[-1] if msg else 'exit ' + str(rc)}")
+
+    def stop_child(self):
+        if self.child and self.child.poll() is None:
+            try:
+                os.killpg(self.child.pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+    # ------------------------------------------------------------- state
+    def load_state(self):
+        try:
+            data = json.loads(self.state_file.read_text(encoding="utf-8"))
+            if isinstance(data.get("photos"), dict):
+                self.state = data
+        except (OSError, ValueError):
+            pass
+
+    def save_state(self):
+        if self.dry:
+            return
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.state_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.state, indent=0), encoding="utf-8")
+        os.replace(tmp, self.state_file)
+
+    # ------------------------------------------------------------- helpers
+    def selected(self, item) -> bool:
+        tags = set(item.get("tags") or [])
+        cats = set(self.cfg.categories)
+        if cats and "all" not in cats:
+            wanted = {CATEGORIES[c] for c in cats if c in CATEGORIES}
+            if not (tags & wanted or (OTHER in cats and not tags)):
+                return False
+        if self.cfg.dates:
+            month = local_month(item.get("captureTime"))
+            if not any(month == d or month.startswith(d + "-") for d in self.cfg.dates):
+                return False
+        return True
+
+    def too_many(self, n: int, what: str) -> bool:
+        tracked = len(self.state["photos"])
+        limit = max(MASS_DELETE_MIN, int(tracked * MASS_DELETE_SHARE))
+        if n > limit and not self.allow_mass:
+            self.log(f"SAFETY STOP: {n} photos would be {what} in one go (limit {limit}). Nothing was deleted. "
+                     "If this is really what you want, run: sleepy-proton-photos --allow-mass-delete")
+            self.notify("Proton Photos: deletions paused",
+                        f"{n} photos would be {what}. Nothing was deleted; check the log.", "critical")
+            return True
+        return False
+
+    # ------------------------------------------------------------- main run
+    def index(self, timeline):
+        tags, months, other = {}, {}, 0
+        for it in timeline:
+            t = it.get("tags") or []
+            if not t:
+                other += 1
+            for x in set(t):
+                tags[str(x)] = tags.get(str(x), 0) + 1
+            m = local_month(it.get("captureTime"))
+            months[m] = months.get(m, 0) + 1
+        data = {"updated": dt.datetime.now().isoformat(timespec="seconds"), "total": len(timeline),
+                "tags": tags, "other": other, "months": dict(sorted(months.items(), reverse=True))}
+        INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = INDEX_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        os.replace(tmp, INDEX_FILE)
+        return data
+
+    def run(self, index_only=False) -> int:
+        cfg = self.cfg
+        label = " (DRY RUN - nothing will change)" if self.dry else ""
+        self.log(f"Proton Photos v{VERSION} started{label} | Mode: {cfg.mode} | Folder: {cfg.dir}")
+        if cfg.categories or cfg.dates:
+            self.log(f"Only: categories={','.join(cfg.categories) or 'all'} dates={','.join(cfg.dates) or 'all'}")
+
+        timeline = self.cli_json(["photo", "timeline"], timeout=900)
+        if not isinstance(timeline, list):
+            raise RuntimeError("Proton sent an unexpected photo list. Nothing was changed.")
+        timeline = [t for t in timeline if t.get("nodeUid")]
+        idx = self.index(timeline)
+        self.log(f"Proton Photos has {idx['total']} photos and videos.")
+        if index_only:
+            return 0
+
+        self.load_state()
+        photos = self.state["photos"]
+        remote = {t["nodeUid"]: t for t in timeline}
+        root = cfg.dir
+
+        tracked_files = [u for u, p in photos.items() if p.get("path")]
+        if tracked_files and (not root.is_dir() or not any(root.iterdir())):
+            self.log(f"WARNING: '{root}' is missing or empty but should hold {len(tracked_files)} photos "
+                     "(unplugged drive?). Skipping this run so nothing gets deleted. If you removed it on "
+                     "purpose, run: sleepy-proton-photos --reset")
+            return 1
+        if photos and not timeline:
+            self.log("WARNING: Proton returned no photos at all. Skipping deletions to be safe.")
+            return 1
+
+        # 1. Deleted in Proton
+        gone = [u for u in photos if u not in remote]
+        if gone:
+            if cfg.mode == "copy":
+                self.log(f"{len(gone)} photo(s) were deleted in Proton; copy mode keeps them here.")
+                for u in gone:
+                    photos.pop(u, None)
+            elif not self.too_many(len(gone), "deleted from this computer"):
+                for u in gone:
+                    rel = photos[u].get("path")
+                    if rel and (root / rel).exists():
+                        self.log(f"Deleted in Proton -> moving to this computer's trash: {rel}")
+                        if not self.dry:
+                            trash_local(root / rel)
+                        self.counts["trashed_here"] += 1
+                    if not self.dry:
+                        photos.pop(u, None)
+                self.save_state()
+
+        # 2. Deleted here
+        missing = [u for u, p in photos.items() if p.get("path") and u in remote and not (root / p["path"]).exists()]
+        if missing:
+            if cfg.mode == "bisync":
+                if not self.too_many(len(missing), "moved to Proton's trash"):
+                    for i in range(0, len(missing), BATCH):
+                        chunk = missing[i:i + BATCH]
+                        for u in chunk:
+                            self.log(f"Deleted here -> moving to Proton's trash: {photos[u]['path']}")
+                        if not self.dry:
+                            rc, out, err = self.cli_run(["filesystem", "trash", *[f"/photos/{u}" for u in chunk]], timeout=600)
+                            if rc != 0:
+                                self.log(f"FAILED to move {len(chunk)} photo(s) to Proton's trash: {(err or out).strip()[-300:]}")
+                                self.counts["failed"] += len(chunk)
+                                continue
+                            for u in chunk:
+                                photos.pop(u, None)
+                            self.save_state()
+                        self.counts["trashed_proton"] += len(chunk)
+            elif cfg.mode == "copy":
+                # Copy never deletes, and doesn't bring back photos you deleted here.
+                for u in missing:
+                    photos[u] = {"path": None, "deleted_here": True}
+                self.log(f"{len(missing)} downloaded photo(s) were deleted here; copy mode won't download them again.")
+            else:  # sync: this folder matches Proton -> download again
+                self.log(f"{len(missing)} photo(s) deleted here will be downloaded again (mirror mode).")
+                for u in missing:
+                    photos.pop(u, None)
+            self.save_state()
+
+        # 3. No longer selected (categories/dates changed): stop tracking, keep the files.
+        for u in [u for u in photos if u in remote and not self.selected(remote[u])]:
+            photos.pop(u, None)
+
+        # 4. Download what's new
+        wanted = [u for u, t in remote.items() if self.selected(t) and u not in photos]
+        if not wanted:
+            self.log("Proton Photos: nothing new to download.")
+        else:
+            self.log(f"{len(wanted)} photo(s) to download.")
+            self.download(wanted, remote)
+        self.save_state()
+
+        c = self.counts
+        summary = (f"{c['downloaded']} downloaded, {c['trashed_here']} moved to this computer's trash, "
+                   f"{c['trashed_proton']} moved to Proton's trash, {c['failed']} failed")
+        if c["failed"]:
+            self.log(f"Proton Photos FINISHED WITH ERRORS: {summary}.{label}")
+            self.notify("Proton Photos had errors", f"{c['failed']} photo(s) failed. Open the log for details.")
+            return 1
+        self.log(f"Proton Photos OK: {summary}.{label}")
+        if c["downloaded"] and not self.dry:
+            self.notify("Proton Photos downloaded", f"{c['downloaded']} new photo(s) saved.", "low")
+        return 0
+
+    def download(self, wanted, remote):
+        root = self.cfg.dir
+        self.log("Getting file names from Proton (this can take a minute)...")
+        details = self.cli_json(["photo", "timeline", "--load-details"], timeout=1800)
+        info = {}
+        for d in details:
+            uid = d.get("uid")
+            name = (d.get("name") or {}).get("value") if (d.get("name") or {}).get("ok") else None
+            if uid:
+                rev = d.get("activeRevision") or {}
+                info[uid] = {"name": safe_name(name or uid.split("~")[-1][:16]),
+                             "sha1": ((rev.get("claimedDigests") or {}).get("sha1"))}
+
+        taken = {p["path"] for p in self.state["photos"].values() if p.get("path")}
+        plan = []
+        for u in sorted(wanted, key=lambda x: remote[x].get("captureTime") or ""):
+            if u not in info:
+                self.log(f"WARNING: no details for one photo ({u[-12:]}); skipping it this time.")
+                continue
+            folder = month_folder(remote[u].get("captureTime"))
+            rel = unique_rel(root, folder, info[u]["name"], taken)
+            taken.add(rel)
+            plan.append((u, rel))
+
+        if self.dry:
+            for u, rel in plan[:50]:
+                self.log(f"Would download: {rel}")
+            if len(plan) > 50:
+                self.log(f"... and {len(plan) - 50} more.")
+            self.counts["downloaded"] = len(plan)
+            return
+
+        staging = root / STAGING_NAME
+        # Batches whose Proton names are all different, so each file can be matched to its photo.
+        batches, cur, names = [], [], set()
+        for u, rel in plan:
+            n = info[u]["name"]
+            if len(cur) >= BATCH or n in names:
+                batches.append(cur); cur, names = [], set()
+            cur.append((u, rel)); names.add(n)
+        if cur:
+            batches.append(cur)
+
+        done = 0
+        for batch in batches:
+            shutil.rmtree(staging, ignore_errors=True)
+            staging.mkdir(parents=True)
+            rc, out, err = self.cli_run(["photo", "download", "--conflict-strategy", "skip", "--json",
+                                         *[f"/photos/{u}" for u, _ in batch], str(staging)], timeout=6 * 3600)
+            for u, rel in batch:
+                src = staging / info[u]["name"]
+                if not src.is_file():
+                    self.log(f"FAILED to download: {rel}")
+                    self.counts["failed"] += 1
+                    continue
+                dst = root / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(src, dst)
+                ts = capture_ts(remote[u].get("captureTime"))
+                if ts:
+                    os.utime(dst, (ts, ts))
+                self.state["photos"][u] = {"path": rel, "sha1": info[u]["sha1"],
+                                           "captured": remote[u].get("captureTime")}
+                self.counts["downloaded"] += 1
+            done += len(batch)
+            self.save_state()
+            self.log(f"Downloaded {self.counts['downloaded']} of {len(plan)}...")
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+# ---------------------------------------------------------------- utilities
+def find_cli():
+    for c in (os.environ.get("PROTON_DRIVE_BIN"), shutil.which("proton-drive"), str(HOME / ".local" / "bin" / "proton-drive")):
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def parse_time(s):
+    try:
+        return dt.datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone()
+    except (AttributeError, ValueError):
+        return None
+
+
+def local_month(s) -> str:
+    t = parse_time(s)
+    return f"{t:%Y-%m}" if t else "undated"
+
+
+def capture_ts(s):
+    t = parse_time(s)
+    return t.timestamp() if t else None
+
+
+def month_folder(s) -> str:
+    t = parse_time(s)
+    if not t:
+        return "Undated"
+    return f"{t.year}/{t.month:02d} {MONTHS[t.month - 1]}"
+
+
+def safe_name(name: str) -> str:
+    name = "".join("_" if c in '/\0' or ord(c) < 32 else c for c in name).strip()
+    return name if name not in ("", ".", "..") else "photo"
+
+
+def unique_rel(root: Path, folder: str, name: str, taken: set) -> str:
+    stem, ext = os.path.splitext(name)
+    rel, n = f"{folder}/{name}", 2
+    while rel in taken or (root / rel).exists():
+        rel = f"{folder}/{stem} ({n}){ext}"
+        n += 1
+    return rel
+
+
+def trash_local(path: Path):
+    """Moves a file to the desktop trash (recoverable); deletes it if there's no trash tool."""
+    for cmd in (["gio", "trash", str(path)], ["kioclient", "move", str(path), "trash:/"]):
+        if shutil.which(cmd[0]) and subprocess.run(cmd, capture_output=True).returncode == 0:
+            return
+    path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------- CLI install
+CLI_VERSION = "0.9.0"
+CLI_SHA512 = {
+    "x86_64": "3533025ba69ae112b64e3e01fbcc1ad0688136a4043f6cf6a72886967d85fdcd9ec235479c2e113171614be5225bfba93427509a05ca5aa6071d924fa7e91ca8",
+}
+
+
+def install_cli() -> int:
+    arch = os.uname().machine
+    if arch not in CLI_SHA512:
+        print(f"No verified download for this computer type ({arch}). Get it from https://proton.me/download/drive/cli/index.html")
+        return 1
+    url = f"https://proton.me/download/drive/cli/{CLI_VERSION}/linux-x64/proton-drive"
+    dest = HOME / ".local" / "bin" / "proton-drive"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".download")
+    print(f"Downloading Proton Drive CLI {CLI_VERSION} from proton.me ...", flush=True)
+    rc = subprocess.run(["curl", "-fL", "--progress-bar", "-A", "Mozilla/5.0 (X11; Linux x86_64)", "-o", str(tmp), url]).returncode
+    if rc != 0:
+        print("Download failed.")
+        return 1
+    h = hashlib.sha512(tmp.read_bytes()).hexdigest()
+    if h != CLI_SHA512[arch]:
+        tmp.unlink(missing_ok=True)
+        print("The download doesn't match Proton's published checksum, so it was deleted. Nothing installed.")
+        return 1
+    tmp.chmod(0o755)
+    os.replace(tmp, dest)
+    print(f"Installed: {dest} (checksum verified). Next: sign in with 'proton-drive auth login'.")
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Download Proton Photos to this computer (Sleepy Proton Drive).")
+    ap.add_argument("-c", "--config", default=str(DEFAULT_CONFIG), help="config file (default ~/.config/proton-sync.conf)")
+    ap.add_argument("-n", "--dry-run", action="store_true", help="show what would happen, change nothing")
+    ap.add_argument("-m", "--mode", choices=["copy", "sync", "bisync"], help="override the photos mode for this run")
+    ap.add_argument("--index-only", action="store_true", help="only refresh the photo counts shown in the app")
+    ap.add_argument("--allow-mass-delete", action="store_true", help="allow more deletions than the safety limit")
+    ap.add_argument("--no-notify", action="store_true", help="no desktop notifications")
+    ap.add_argument("--status", action="store_true", help="show whether the Proton tool is installed and signed in")
+    ap.add_argument("--install-cli", action="store_true", help="download and install Proton's proton-drive tool")
+    ap.add_argument("--reset", action="store_true", help="forget which photos were downloaded (files are kept)")
+    ap.add_argument("--version", action="version", version=f"sleepy-proton-photos {VERSION}")
+    a = ap.parse_args()
+
+    if a.install_cli:
+        return install_cli()
+    cfg = Config(Path(a.config))
+    if a.mode:
+        cfg.mode = a.mode
+    if a.status:
+        cli = find_cli()
+        if not cli:
+            print("cli missing")
+            return 1
+        r = subprocess.run([cli, "filesystem", "list", "/"], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        print("signed-in" if r.returncode == 0 and "/photos" in r.stdout else "signed-out")
+        return 0
+
+    try:
+        LOCK_DIR.mkdir(parents=True)
+    except FileExistsError:
+        try:
+            pid = int((LOCK_DIR / "pid").read_text())
+            os.kill(pid, 0)
+            print(f"Proton Photos is already running (PID {pid}). Skipping this run.")
+            return 0
+        except (OSError, ValueError):
+            shutil.rmtree(LOCK_DIR, ignore_errors=True)
+            LOCK_DIR.mkdir(parents=True)
+    (LOCK_DIR / "pid").write_text(str(os.getpid()))
+
+    r = Runner(cfg, a.dry_run, a.allow_mass_delete, a.no_notify)
+    if a.reset:
+        r.state_file.unlink(missing_ok=True)
+        print("Forgot the download history for this folder. Files on disk were not touched.")
+        shutil.rmtree(LOCK_DIR, ignore_errors=True)
+        return 0
+
+    def on_signal(*_):
+        r.stop_child()
+        raise Stop()
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+    try:
+        return r.run(index_only=a.index_only)
+    except Stop:
+        r.save_state()
+        r.log("Proton Photos stopped by request. Photos already downloaded are kept.")
+        return 143
+    except RuntimeError as e:
+        r.log(f"Proton Photos ERROR: {e}")
+        r.notify("Proton Photos failed", str(e)[:200], "critical")
+        return 1
+    finally:
+        shutil.rmtree(LOCK_DIR, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -9,6 +9,7 @@ flexible layout scaling, and scrollable responsive containers.
 ==============================================================================
 """
 
+import json
 import os
 import re
 import sys
@@ -17,7 +18,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 VENV_PYTHON = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "sleepy-proton-drive" / "venv" / "bin" / "python"
 
 try:
@@ -27,7 +28,7 @@ try:
         QFileDialog, QTabWidget, QGroupBox, QRadioButton,
         QLineEdit, QTextEdit, QMessageBox, QStatusBar, QInputDialog,
         QFrame, QDialog, QStackedWidget, QCheckBox, QSpinBox, QSlider,
-        QComboBox, QScrollArea, QSizePolicy
+        QComboBox, QScrollArea, QSizePolicy, QTreeWidget, QTreeWidgetItem
     )
     from PySide6.QtCore import Qt, QProcess, QTimer, QProcessEnvironment
     from PySide6.QtGui import QIcon, QColor
@@ -64,6 +65,21 @@ if not CHECK_SCRIPT.exists():
     CHECK_SCRIPT = BIN_DIR.parent / "check-requirements.sh"
 if not SYNC_SCRIPT.exists():
     SYNC_SCRIPT = Path.home() / ".local" / "bin" / "sleepy-proton-sync"
+
+DEFAULT_PHOTOS_DIR = Path.home() / "Pictures" / "Proton Photos"
+PHOTOS_SCRIPT = BIN_DIR / "sleepy-proton-photos"
+if not PHOTOS_SCRIPT.exists():
+    PHOTOS_SCRIPT = Path.home() / ".local" / "bin" / "sleepy-proton-photos"
+PHOTOS_INDEX = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "sleepy-proton-drive" / "photos-index.json"
+# (key, label, Proton tag number); "other" = photos without a category.
+PHOTO_CATEGORIES = [
+    ("other", "Regular photos", None), ("videos", "Videos", 2), ("raw", "RAW", 9),
+    ("favorites", "Favourites", 0), ("screenshots", "Screenshots", 1), ("live-photos", "Live photos", 3),
+    ("motion-photos", "Motion photos", 4), ("selfies", "Selfies", 5), ("portraits", "Portraits", 6),
+    ("bursts", "Bursts", 7), ("panoramas", "Panoramas", 8),
+]
+MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
+               "August", "September", "October", "November", "December"]
 
 TIMER_INTERVALS = ["15min", "30min", "1h", "2h", "1d"]
 DEFAULT_EXCLUDES = [
@@ -161,6 +177,13 @@ QTabWidget::pane {
     background-color: #110d22;
     border-radius: 12px;
     padding: 10px;
+}
+
+QTabBar QToolButton {
+    background-color: #141028;
+    border: 1px solid #231c44;
+    border-radius: 6px;
+    color: #b794ff;
 }
 
 QTabBar::tab {
@@ -369,6 +392,23 @@ QListWidget {
     font-size: 13px;
 }
 
+QTreeWidget {
+    background-color: #0b0918;
+    border: 1px solid #231c44;
+    border-radius: 8px;
+    padding: 6px;
+    color: #f3ecff;
+    font-size: 13px;
+}
+
+QTreeWidget::item {
+    padding: 4px 6px;
+}
+
+QTreeWidget:disabled {
+    color: #5b5180;
+}
+
 QListWidget::item {
     padding: 8px 12px;
     border-radius: 6px;
@@ -402,6 +442,24 @@ QRadioButton, QCheckBox {
     spacing: 10px;
     color: #f3ecff;
     font-size: 13px;
+}
+
+QTreeWidget::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #8b5cf6;
+    border-radius: 4px;
+    background: #0b0918;
+}
+
+QTreeWidget::indicator:checked {
+    background: #8b5cf6;
+    border: 1px solid #38bdf8;
+}
+
+QTreeWidget::indicator:indeterminate {
+    background: #3b2a6e;
+    border: 1px solid #8b5cf6;
 }
 
 QRadioButton::indicator, QCheckBox::indicator {
@@ -493,11 +551,16 @@ _DUMP_CONFIG = r"""
 REMOTE_NAME=protondrive; DEVICE_NAME=""; SYNC_MODE=copy; NOTIFY=true
 LOG_FILE="$HOME/.local/share/proton-sync.log"; LOG_MAX_LINES=5000
 SYNC_DIRS=(); RCLONE_FLAGS=(); EXCLUDE_DIRS=()
+PHOTOS_ENABLED=false; PHOTOS_DIR="$HOME/Pictures/Proton Photos"; PHOTOS_MODE=copy
+PHOTOS_CATEGORIES=(); PHOTOS_DATES=()
 source "$1" >/dev/null 2>&1 || exit 3
 printf '%s\0' "$REMOTE_NAME" "$DEVICE_NAME" "$SYNC_MODE" "$NOTIFY" "$LOG_FILE" "$LOG_MAX_LINES"
 printf '%s\0' "${#SYNC_DIRS[@]}" "${SYNC_DIRS[@]}"
 printf '%s\0' "${#RCLONE_FLAGS[@]}" "${RCLONE_FLAGS[@]}"
 printf '%s\0' "${#EXCLUDE_DIRS[@]}" "${EXCLUDE_DIRS[@]}"
+printf '%s\0' "$PHOTOS_ENABLED" "$PHOTOS_DIR" "$PHOTOS_MODE"
+printf '%s\0' "${#PHOTOS_CATEGORIES[@]}" "${PHOTOS_CATEGORIES[@]}"
+printf '%s\0' "${#PHOTOS_DATES[@]}" "${PHOTOS_DATES[@]}"
 """
 
 
@@ -515,6 +578,11 @@ class ConfigManager:
         self.device_name = os.uname().nodename
         self.sync_dirs = [str(Path.home() / "Documents"), str(Path.home() / "Pictures")]
         self.exclude_dirs = []
+        self.photos_enabled = False
+        self.photos_dir = str(DEFAULT_PHOTOS_DIR)
+        self.photos_mode = "copy"
+        self.photos_categories = []
+        self.photos_dates = []
         self.sync_mode = "copy"
         self.notify = True
         self.log_file = str(DEFAULT_LOG_PATH)
@@ -546,7 +614,12 @@ class ConfigManager:
             n_flags = int(vals[idx]); idx += 1
             flags = vals[idx:idx + n_flags]; idx += n_flags
             n_ex = int(vals[idx]); idx += 1
-            ex_dirs = vals[idx:idx + n_ex]
+            ex_dirs = vals[idx:idx + n_ex]; idx += n_ex
+            ph_enabled, ph_dir, ph_mode = vals[idx:idx + 3]; idx += 3
+            n = int(vals[idx]); idx += 1
+            ph_cats = vals[idx:idx + n]; idx += n
+            n = int(vals[idx]); idx += 1
+            ph_dates = vals[idx:idx + n]
         except (ValueError, IndexError):
             self.load_error = f"Couldn't understand {self.path}. Defaults are shown."
             self.set_defaults()
@@ -564,6 +637,11 @@ class ConfigManager:
             self.log_max_lines = 5000
         self.sync_dirs = [os.path.expanduser(d).rstrip("/") or "/" for d in dirs]
         self.exclude_dirs = [os.path.expanduser(d).rstrip("/") for d in ex_dirs if d.strip("/ ")]
+        self.photos_enabled = ph_enabled.strip().lower() == "true"
+        self.photos_dir = os.path.expanduser(ph_dir).rstrip("/") or str(DEFAULT_PHOTOS_DIR)
+        self.photos_mode = ph_mode if ph_mode in ("copy", "sync", "bisync") else "copy"
+        self.photos_categories = [c.strip().lower() for c in ph_cats if c.strip()]
+        self.photos_dates = [d.strip() for d in ph_dates if d.strip()]
 
         self.excludes, self.other_flags, self.bwlimit = [], [], ""
         i = 0
@@ -610,6 +688,17 @@ class ConfigManager:
             "",
             "# copy = safest (never deletes in Proton) | sync = mirror | bisync = two-way",
             f"SYNC_MODE={bash_dq(self.sync_mode)}",
+            "",
+            "# Proton Photos download (needs Proton's proton-drive tool).",
+            "# copy = download only | sync = this folder matches Proton Photos | bisync = two-way",
+            f"PHOTOS_ENABLED={'true' if self.photos_enabled else 'false'}",
+            f"PHOTOS_DIR={bash_path(self.photos_dir)}",
+            f"PHOTOS_MODE={bash_dq(self.photos_mode)}",
+            "# Empty = everything. Categories: other favorites screenshots videos live-photos",
+            "# motion-photos selfies portraits bursts panoramas raw. Dates: \"2026\" or \"2026-11\".",
+            "PHOTOS_CATEGORIES=(" + " ".join(bash_dq(c) for c in self.photos_categories) + ")",
+            "PHOTOS_DATES=(" + " ".join(bash_dq(d) for d in self.photos_dates) + ")",
+            "",
             f"NOTIFY={'true' if self.notify else 'false'}",
             f"LOG_FILE={bash_path(self.log_file)}",
             f"LOG_MAX_LINES={int(self.log_max_lines)}",
@@ -1175,8 +1264,8 @@ class MainWindow(QMainWindow):
         screen_geo = screen.availableGeometry() if screen else None
         target_w = min(1080, int(screen_geo.width() * 0.75)) if screen_geo else 960
         target_h = min(760, int(screen_geo.height() * 0.82)) if screen_geo else 680
-        self.resize(target_w, target_h)
-        self.setMinimumSize(780, 520)
+        self.resize(max(target_w, 900), max(target_h, 600))
+        self.setMinimumSize(900, 600)
         self.setStyleSheet(SLEEPY_STYLESHEET)
 
         # Set Window Icon
@@ -1274,6 +1363,7 @@ class MainWindow(QMainWindow):
 
         self.setup_tab_overview()
         self.setup_tab_folders()
+        self.setup_tab_photos()
         self.setup_tab_settings()
         self.setup_tab_automation()
         self.setup_tab_logs()
@@ -1858,6 +1948,469 @@ class MainWindow(QMainWindow):
             self.list_excludes.addItem(f"🚫 {exc}")
         self.refresh_folder_list()
         self.refresh_overview_cards()
+        if hasattr(self, "chk_photos_enabled"):
+            self.chk_photos_enabled.setChecked(self.config.photos_enabled)
+            self.edit_photos_dir.setText(self.config.photos_dir)
+            self.photo_mode_radios.get(self.config.photos_mode, self.photo_mode_radios["copy"]).setChecked(True)
+            self.load_photo_filters()
+
+    # --------------------------------------------------------------------------
+    # Tab: Proton Photos
+    # --------------------------------------------------------------------------
+    def setup_tab_photos(self):
+        self.photos_proc = None
+        self.photos_status_proc = None
+        self._photos_index = {}
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(14)
+
+        # Status card
+        card = QFrame()
+        card.setObjectName("card")
+        c_layout = QHBoxLayout(card)
+        c_layout.setContentsMargins(16, 12, 16, 12)
+        c_layout.setSpacing(10)
+        v = QVBoxLayout()
+        v.setSpacing(3)
+        t = QLabel("Proton Photos → this computer")
+        t.setStyleSheet("font-size: 15px; font-weight: 800; color: #b794ff;")
+        self.lbl_photos_status = QLabel("Checking Proton's tool...")
+        self.lbl_photos_status.setStyleSheet("color: #9d8ec2; font-size: 12px;")
+        self.lbl_photos_status.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(self.lbl_photos_status)
+        c_layout.addLayout(v, 1)
+        self.btn_photos_install = QPushButton("⬇ Install Proton's Tool")
+        self.btn_photos_install.setObjectName("btnPrimary")
+        self.btn_photos_install.clicked.connect(self.install_photos_cli)
+        self.btn_photos_signin = QPushButton("🔑 Sign In")
+        self.btn_photos_signin.clicked.connect(self.photos_sign_in)
+        btn_check = QPushButton("↻ Check")
+        btn_check.clicked.connect(self.check_photos_status)
+        for b in (self.btn_photos_install, self.btn_photos_signin, btn_check):
+            c_layout.addWidget(b, 0, Qt.AlignVCenter)
+        self.btn_photos_install.hide()
+        layout.addWidget(card)
+
+        # Where + automatic
+        grp_where = QGroupBox("Where && When")
+        w_layout = QGridLayout(grp_where)
+        w_layout.setHorizontalSpacing(10)
+        w_layout.setVerticalSpacing(10)
+        self.chk_photos_enabled = QCheckBox("Download my Proton Photos automatically with every background sync")
+        self.chk_photos_enabled.setChecked(self.config.photos_enabled)
+        w_layout.addWidget(self.chk_photos_enabled, 0, 0, 1, 5)
+        w_layout.addWidget(QLabel("Save to:"), 1, 0)
+        self.edit_photos_dir = QLineEdit(self.config.photos_dir)
+        self.edit_photos_dir.setMinimumWidth(220)
+        w_layout.addWidget(self.edit_photos_dir, 1, 1)
+        b_browse = QPushButton("Browse...")
+        b_browse.clicked.connect(self.browse_photos_dir)
+        b_reset = QPushButton("Default")
+        b_reset.setToolTip(str(DEFAULT_PHOTOS_DIR))
+        b_reset.clicked.connect(lambda: self.edit_photos_dir.setText(str(DEFAULT_PHOTOS_DIR)))
+        b_open = QPushButton("📂 Open")
+        b_open.clicked.connect(self.open_photos_dir)
+        w_layout.addWidget(b_browse, 1, 2)
+        w_layout.addWidget(b_reset, 1, 3)
+        w_layout.addWidget(b_open, 1, 4)
+        w_layout.setColumnStretch(1, 1)
+        hint = QLabel("Photos are arranged like the Proton Photos timeline: <b>Year / Month</b> "
+                      "(e.g. 2026 / 11 November). Each file keeps the date it was taken.")
+        hint.setStyleSheet("color: #9d8ec2; font-size: 12px; font-weight: 400;")
+        hint.setWordWrap(True)
+        w_layout.addWidget(hint, 2, 0, 1, 5)
+        layout.addWidget(grp_where)
+
+        # Mode
+        grp_mode = QGroupBox("Mode")
+        m_layout = QVBoxLayout(grp_mode)
+        m_layout.setSpacing(4)
+        self.photo_mode_radios = {}
+        for key, title, desc in (
+            ("copy", "Copy  [SAFEST / Recommended]",
+             "Downloads new photos. Nothing is ever deleted, here or in Proton. Photos you delete here aren't downloaded again."),
+            ("sync", "Mirror  (Proton → this computer)",
+             "This folder matches Proton Photos: photos deleted in Proton go to this computer's trash. "
+             "Photos you delete here are downloaded again."),
+            ("bisync", "Two-way",
+             "Like Mirror, and photos you delete here are moved to Proton's trash (you can restore them there for 30 days)."),
+        ):
+            r = QRadioButton(title)
+            d = QLabel(desc)
+            d.setWordWrap(True)
+            d.setStyleSheet("color: #9d8ec2; font-size: 12px; font-weight: 400; margin-left: 28px; margin-bottom: 6px;")
+            m_layout.addWidget(r)
+            m_layout.addWidget(d)
+            self.photo_mode_radios[key] = r
+        self.photo_mode_radios.get(self.config.photos_mode, self.photo_mode_radios["copy"]).setChecked(True)
+        layout.addWidget(grp_mode)
+
+        # What to download
+        grp_what = QGroupBox("What to Download")
+        what = QGridLayout(grp_what)
+        what.setHorizontalSpacing(18)
+        what.setVerticalSpacing(8)
+
+        cat_box = QVBoxLayout()
+        cat_box.setSpacing(6)
+        lbl_c = QLabel("Categories")
+        lbl_c.setStyleSheet("color: #38bdf8; font-weight: 700;")
+        cat_box.addWidget(lbl_c)
+        self.chk_cat_all = QCheckBox("Everything")
+        self.chk_cat_all.toggled.connect(self.on_cat_all_toggled)
+        cat_box.addWidget(self.chk_cat_all)
+        cat_grid = QGridLayout()
+        cat_grid.setHorizontalSpacing(14)
+        cat_grid.setVerticalSpacing(6)
+        self.cat_checks = {}
+        for i, (key, label, _tag) in enumerate(PHOTO_CATEGORIES):
+            cb = QCheckBox(label)
+            cb.toggled.connect(self.on_cat_toggled)
+            self.cat_checks[key] = cb
+            cat_grid.addWidget(cb, i // 2, i % 2)
+        cat_box.addLayout(cat_grid)
+        cat_note = QLabel("A photo is downloaded if it's in any ticked category.")
+        cat_note.setStyleSheet("color: #9d8ec2; font-size: 11px; font-weight: 400;")
+        cat_note.setWordWrap(True)
+        cat_box.addWidget(cat_note)
+        cat_box.addStretch()
+
+        date_box = QVBoxLayout()
+        date_box.setSpacing(6)
+        lbl_d = QLabel("Dates")
+        lbl_d.setStyleSheet("color: #38bdf8; font-weight: 700;")
+        date_box.addWidget(lbl_d)
+        self.chk_dates_all = QCheckBox("All dates (new months included automatically)")
+        self.chk_dates_all.toggled.connect(lambda on: self.tree_dates.setEnabled(not on))
+        date_box.addWidget(self.chk_dates_all)
+        self.tree_dates = QTreeWidget()
+        self.tree_dates.setHeaderHidden(True)
+        self.tree_dates.setMinimumHeight(190)
+        self.tree_dates.setRootIsDecorated(True)
+        self.tree_dates.itemChanged.connect(self.on_date_item_changed)
+        date_box.addWidget(self.tree_dates, 1)
+        h_ref = QHBoxLayout()
+        self.btn_photos_refresh = QPushButton("↻ Load Dates && Counts from Proton")
+        self.btn_photos_refresh.clicked.connect(lambda: self.run_photos(index_only=True))
+        h_ref.addWidget(self.btn_photos_refresh)
+        h_ref.addStretch()
+        date_box.addLayout(h_ref)
+        self.lbl_photos_index = QLabel("")
+        self.lbl_photos_index.setStyleSheet("color: #9d8ec2; font-size: 11px; font-weight: 400;")
+        self.lbl_photos_index.setWordWrap(True)
+        date_box.addWidget(self.lbl_photos_index)
+
+        what.addLayout(cat_box, 0, 0)
+        what.addLayout(date_box, 0, 1)
+        what.setColumnStretch(0, 1)
+        what.setColumnStretch(1, 1)
+        layout.addWidget(grp_what, 1)
+
+        # Actions + activity
+        h_act = QHBoxLayout()
+        h_act.setSpacing(10)
+        b_save = QPushButton("💾 Save Photo Settings")
+        b_save.clicked.connect(lambda: self.save_photo_settings(True))
+        self.btn_photos_preview = QPushButton("🔍 Preview (changes nothing)")
+        self.btn_photos_preview.clicked.connect(lambda: self.run_photos(dry_run=True))
+        self.btn_photos_now = QPushButton("⬇ Download Photos Now")
+        self.btn_photos_now.setObjectName("btnPrimary")
+        self.btn_photos_now.clicked.connect(lambda: self.run_photos())
+        self.btn_photos_stop = QPushButton("■ Stop")
+        self.btn_photos_stop.setEnabled(False)
+        self.btn_photos_stop.clicked.connect(self.stop_photos)
+        for b in (b_save, self.btn_photos_preview, self.btn_photos_now, self.btn_photos_stop):
+            b.setMinimumHeight(36)
+            h_act.addWidget(b)
+        h_act.addStretch()
+        layout.addLayout(h_act)
+
+        self.photos_log = QTextEdit()
+        self.photos_log.setReadOnly(True)
+        self.photos_log.setMinimumHeight(130)
+        self.photos_log.setPlaceholderText("What Proton Photos is doing shows up here.")
+        layout.addWidget(self.photos_log)
+
+        self.load_photo_filters()
+        self.tabs.addTab(create_scrollable_container(container), "📷 Photos")
+        QTimer.singleShot(700, self.check_photos_status)
+
+    # ---- filters <-> widgets
+    def load_photo_filters(self):
+        cats = set(self.config.photos_categories)
+        everything = not cats or "all" in cats
+        self.chk_cat_all.blockSignals(True)
+        self.chk_cat_all.setChecked(everything)
+        self.chk_cat_all.blockSignals(False)
+        for key, cb in self.cat_checks.items():
+            cb.blockSignals(True)
+            cb.setChecked(everything or key in cats)
+            cb.blockSignals(False)
+        self.chk_dates_all.setChecked(not self.config.photos_dates)
+        self.tree_dates.setEnabled(bool(self.config.photos_dates))
+        self.load_photos_index()
+
+    def load_photos_index(self):
+        try:
+            self._photos_index = json.loads(PHOTOS_INDEX.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self._photos_index = {}
+        idx = self._photos_index
+        tags = idx.get("tags", {})
+        for key, label, tag in PHOTO_CATEGORIES:
+            n = idx.get("other") if tag is None else tags.get(str(tag), 0)
+            self.cat_checks[key].setText(f"{label}  ({n})" if idx else label)
+        if idx:
+            self.chk_cat_all.setText(f"Everything  ({idx.get('total', 0)})")
+            self.lbl_photos_index.setText(f"Counts from Proton, {idx.get('updated', '?').replace('T', ' ')[:16]}.")
+        else:
+            self.lbl_photos_index.setText("Click the button above to see your photo dates and counts.")
+        self.fill_date_tree()
+
+    def fill_date_tree(self):
+        chosen = set(self.config.photos_dates)
+        months = dict(self._photos_index.get("months", {}))
+        for d in chosen:  # keep saved choices visible even before counts are loaded
+            if len(d) == 7:
+                months.setdefault(d, None)
+            elif len(d) == 4 and not any(m.startswith(d) for m in months):
+                months.setdefault(d + "-00", None)
+        years = {}
+        for m, n in months.items():
+            if m == "undated":
+                continue
+            years.setdefault(m[:4], []).append((m, n))
+        self.tree_dates.blockSignals(True)
+        self.tree_dates.clear()
+        for y in sorted(years, reverse=True):
+            total = sum(n or 0 for _, n in years[y])
+            yi = QTreeWidgetItem([f"{y}  ({total})" if total else y])
+            yi.setData(0, Qt.UserRole, y)
+            yi.setFlags(yi.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsAutoTristate)
+            self.tree_dates.addTopLevelItem(yi)
+            for m, n in sorted(years[y], reverse=True):
+                if m.endswith("-00"):
+                    continue
+                label = MONTH_NAMES[int(m[5:7]) - 1]
+                mi = QTreeWidgetItem([f"{label}  ({n})" if n else label])
+                mi.setData(0, Qt.UserRole, m)
+                mi.setFlags(mi.flags() | Qt.ItemIsUserCheckable)
+                mi.setCheckState(0, Qt.Checked if (y in chosen or m in chosen) else Qt.Unchecked)
+                yi.addChild(mi)
+            if yi.childCount() == 0:
+                yi.setCheckState(0, Qt.Checked if y in chosen else Qt.Unchecked)
+        self.tree_dates.blockSignals(False)
+        if self.tree_dates.topLevelItemCount() == 0:
+            empty = QTreeWidgetItem(["No dates loaded yet"])
+            empty.setFlags(Qt.NoItemFlags)
+            self.tree_dates.addTopLevelItem(empty)
+
+    def on_date_item_changed(self, *_):
+        pass  # read on save; Qt handles year/month tick sync (auto-tristate)
+
+    def selected_dates(self):
+        if self.chk_dates_all.isChecked():
+            return []
+        out = []
+        for i in range(self.tree_dates.topLevelItemCount()):
+            yi = self.tree_dates.topLevelItem(i)
+            y = yi.data(0, Qt.UserRole)
+            if not y:
+                continue
+            if yi.checkState(0) == Qt.Checked:
+                out.append(y)  # whole year: new months of that year are included too
+            elif yi.checkState(0) == Qt.PartiallyChecked:
+                out += [yi.child(j).data(0, Qt.UserRole) for j in range(yi.childCount())
+                        if yi.child(j).checkState(0) == Qt.Checked]
+        return out
+
+    def on_cat_all_toggled(self, on):
+        for cb in self.cat_checks.values():
+            cb.blockSignals(True)
+            cb.setChecked(on)
+            cb.blockSignals(False)
+
+    def on_cat_toggled(self, *_):
+        self.chk_cat_all.blockSignals(True)
+        self.chk_cat_all.setChecked(all(cb.isChecked() for cb in self.cat_checks.values()))
+        self.chk_cat_all.blockSignals(False)
+
+    def browse_photos_dir(self):
+        start = self.edit_photos_dir.text().strip() or str(DEFAULT_PHOTOS_DIR)
+        while start and not os.path.isdir(start):
+            start = os.path.dirname(start)
+        folder = QFileDialog.getExistingDirectory(self, "Where should Proton Photos be saved?", start or str(Path.home()))
+        if folder:
+            self.edit_photos_dir.setText(folder.rstrip("/") or "/")
+
+    def open_photos_dir(self):
+        d = self.edit_photos_dir.text().strip() or str(DEFAULT_PHOTOS_DIR)
+        if os.path.isdir(d):
+            self.open_path(d)
+        else:
+            QMessageBox.information(self, "Not there yet", f"This folder will be made on the first download:\n{d}")
+
+    def save_photo_settings(self, show_popup=True) -> bool:
+        d = os.path.expanduser(self.edit_photos_dir.text().strip()) or str(DEFAULT_PHOTOS_DIR)
+        d = os.path.abspath(d)
+        if (any(d == s or path_inside(d, s) for s in self.config.sync_dirs)
+                and not any(d == e or path_inside(d, e) for e in self.config.exclude_dirs)
+                and getattr(self, "_photos_backup_ok", None) != d):
+            if any(d == s for s in self.config.sync_dirs):
+                QMessageBox.information(
+                    self, "Heads up",
+                    f"'{short_home(d)}' is one of your backed-up folders, so downloaded photos will "
+                    "also be uploaded to Proton Drive again (as normal files).\n\n"
+                    "To avoid that, pick a folder inside it instead (like the default).")
+            else:
+                box = QMessageBox(self)
+                box.setWindowTitle("Skip these in your backup?")
+                box.setIcon(QMessageBox.Question)
+                box.setText(f"'{short_home(d)}' is inside a folder you back up.")
+                box.setInformativeText(
+                    "Your photos are already in Proton Photos, so uploading them to Proton Drive "
+                    "again would use double the space.\n\nExclude this folder from the backup?")
+                b_ex = box.addButton("Exclude It (Recommended)", QMessageBox.AcceptRole)
+                box.addButton("Back It Up Too", QMessageBox.RejectRole)
+                box.setDefaultButton(b_ex)
+                box.exec()
+                if box.clickedButton() is b_ex:
+                    self.config.exclude_dirs = [e for e in self.config.exclude_dirs
+                                                if not path_inside(e, d)] + [d]
+                    self.refresh_excluded_list()
+                else:
+                    self._photos_backup_ok = d
+        cats = [k for k, cb in self.cat_checks.items() if cb.isChecked()]
+        if not cats:
+            QMessageBox.warning(self, "Nothing ticked", "Tick at least one category (or Everything).")
+            return False
+        dates = self.selected_dates()
+        if not self.chk_dates_all.isChecked() and not dates:
+            QMessageBox.warning(self, "No dates ticked", "Tick at least one year or month, or choose All dates.")
+            return False
+        self.config.photos_enabled = self.chk_photos_enabled.isChecked()
+        self.config.photos_dir = d
+        self.config.photos_mode = next(k for k, r in self.photo_mode_radios.items() if r.isChecked())
+        self.config.photos_categories = [] if len(cats) == len(self.cat_checks) else cats
+        self.config.photos_dates = dates
+        if not self.save_config_or_warn():
+            return False
+        self.edit_photos_dir.setText(d)
+        self.status_bar.showMessage("Proton Photos settings saved.", 4000)
+        if show_popup:
+            QMessageBox.information(self, "Saved", "Your Proton Photos settings have been saved.")
+        return True
+
+    # ---- Proton tool status / install / sign in
+    def check_photos_status(self):
+        if self.photos_status_proc and self.photos_status_proc.state() != QProcess.NotRunning:
+            return
+        if not PHOTOS_SCRIPT.exists():
+            self.lbl_photos_status.setText("⚠ sleepy-proton-photos is missing. Re-run ./install.sh.")
+            return
+        self.lbl_photos_status.setText("Checking Proton's tool...")
+        p = QProcess(self)
+        def done(*_):
+            try:
+                self.on_photos_status(bytes(p.readAllStandardOutput()).decode(errors="replace"))
+            except RuntimeError:
+                pass  # window closed while checking
+        p.finished.connect(done)
+        self.photos_status_proc = p
+        p.start(str(PHOTOS_SCRIPT), ["--status"])
+
+    def on_photos_status(self, out):
+        out = out.strip()
+        self.btn_photos_install.setVisible(out == "cli missing")
+        self.btn_photos_signin.setVisible(out != "cli missing")
+        if out == "signed-in":
+            self.lbl_photos_status.setText("<span style='color:#10b981'>✓ Ready</span>: Proton's tool is installed "
+                                           "and signed in.")
+            self.btn_photos_signin.setText("🔑 Sign In Again")
+        elif out == "cli missing":
+            self.lbl_photos_status.setText("<span style='color:#f5b65a'>Proton's official Drive tool is needed</span> "
+                                           "to read Proton Photos. Click Install (from proton.me, checksum verified).")
+        else:
+            self.lbl_photos_status.setText("<span style='color:#f5b65a'>Not signed in.</span> Click Sign In: "
+                                           "your browser opens Proton's sign-in page.")
+            self.btn_photos_signin.setText("🔑 Sign In")
+
+    def install_photos_cli(self):
+        self.run_photos_cmd(["--install-cli"], "Installing Proton's tool...")
+
+    def photos_sign_in(self):
+        cli = shutil.which("proton-drive") or str(Path.home() / ".local" / "bin" / "proton-drive")
+        if not os.path.exists(cli):
+            self.check_photos_status()
+            return
+        self.photos_log.append(">>> Opening Proton's sign-in page in your browser. Sign in there, then come back.")
+        p = QProcess(self)
+        p.setProcessChannelMode(QProcess.MergedChannels)
+        p.readyReadStandardOutput.connect(lambda: self.photos_log.append(
+            ANSI_RE.sub("", bytes(p.readAllStandardOutput()).decode(errors="replace")).strip()))
+        p.finished.connect(lambda *_: self.check_photos_status())
+        self._signin_proc = p
+        p.start(cli, ["auth", "login"])
+
+    # ---- running
+    def run_photos(self, dry_run=False, index_only=False):
+        if self.photos_proc and self.photos_proc.state() != QProcess.NotRunning:
+            QMessageBox.information(self, "Busy", "Proton Photos is already working. Wait for it or click Stop.")
+            return
+        if not index_only:
+            if not self.save_photo_settings(show_popup=False):
+                return
+            if self.config.photos_mode == "bisync" and not dry_run:
+                if QMessageBox.question(
+                        self, "Two-way mode",
+                        "Photos you deleted from the photos folder on this computer will be moved to Proton's trash "
+                        "(restorable for 30 days).\n\nTip: click Preview first to see what would happen.\n\nContinue?",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+                    return
+        args = ["--config", str(CONFIG_PATH)]
+        if dry_run:
+            args.append("--dry-run")
+        if index_only:
+            args.append("--index-only")
+        label = ("Loading dates and counts from Proton..." if index_only else
+                 "Previewing (nothing will change)..." if dry_run else "Downloading Proton Photos...")
+        self.run_photos_cmd(args, label)
+
+    def run_photos_cmd(self, args, label):
+        self.photos_log.append(f"\n>>> {label}")
+        self.status_bar.showMessage(label, 5000)
+        p = QProcess(self)
+        p.setProcessChannelMode(QProcess.MergedChannels)
+        p.readyReadStandardOutput.connect(self.on_photos_output)
+        p.finished.connect(self.on_photos_finished)
+        self.photos_proc = p
+        for b in (self.btn_photos_now, self.btn_photos_preview, self.btn_photos_refresh, self.btn_photos_install):
+            b.setEnabled(False)
+        self.btn_photos_stop.setEnabled(True)
+        p.start(str(PHOTOS_SCRIPT), args)
+
+    def on_photos_output(self):
+        if self.photos_proc:
+            text = bytes(self.photos_proc.readAllStandardOutput()).decode(errors="replace")
+            for line in ANSI_RE.sub("", text).splitlines():
+                if line.strip():
+                    self.photos_log.append(line)
+
+    def on_photos_finished(self, code, _status):
+        self.photos_log.append(">>> Done." if code == 0 else
+                               ">>> Stopped." if code == 143 else f">>> Finished with a problem (code {code}). See above.")
+        for b in (self.btn_photos_now, self.btn_photos_preview, self.btn_photos_refresh, self.btn_photos_install):
+            b.setEnabled(True)
+        self.btn_photos_stop.setEnabled(False)
+        self.load_photos_index()
+        self.check_photos_status()
+
+    def stop_photos(self):
+        if self.photos_proc and self.photos_proc.state() != QProcess.NotRunning:
+            self.photos_proc.terminate()
 
     # --------------------------------------------------------------------------
     # Tab 4: Automation & Service
@@ -2210,6 +2763,13 @@ class MainWindow(QMainWindow):
         self.diag_proc.start("bash", [str(CHECK_SCRIPT)])
 
     def closeEvent(self, event):
+        if getattr(self, "photos_proc", None) and self.photos_proc.state() != QProcess.NotRunning:
+            if QMessageBox.question(self, "Proton Photos running", "Proton Photos is still working. Stop it and quit?",
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                event.ignore()
+                return
+            self.photos_proc.terminate()
+            self.photos_proc.waitForFinished(8000)
         if self.process and self.process.state() != QProcess.NotRunning:
             reply = QMessageBox.question(
                 self, "Sync running",

@@ -23,6 +23,12 @@ SYNC_DIRS=(
     "$HOME/Pictures"
 )
 
+# Folders INSIDE the ones above that are never backed up (with everything in
+# them). Only that exact folder is skipped. Copies already in Proton Drive are
+# kept, even in "sync" mode. Example:
+#   EXCLUDE_DIRS=("$HOME/Documents/Old stuff" "$HOME/Pictures/Screenshots")
+EXCLUDE_DIRS=()
+
 # How to sync:
 #   "copy"   - SAFEST (recommended). Uploads new and changed files.
 #              Deleting a file on this computer does NOT delete it in Proton Drive.

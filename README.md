@@ -24,6 +24,7 @@ your Proton Drive automatically in the background. It's built on
 - **Background sync** every 15 min to once a day, with a systemd user timer (no root needed).
 - **Safety checks**: dry-run preview, and folders that are empty (for example an unplugged
   drive) are skipped in mirror/two-way mode so they can't wipe your cloud copy.
+- **Exclude folders**: back up `~/Documents` but leave out `~/Documents/Old stuff`.
 - **Dashboard**: Sync Now, Dry-Run, Stop, live log, folder manager, speed limits and skip rules.
 
 > [!NOTE]
@@ -145,6 +146,7 @@ it's a plain Bash file you can also edit by hand
 | `REMOTE_NAME` | `protondrive` | The rclone remote that holds your Proton login. |
 | `DEVICE_NAME` | hostname | Folder name under `Devices/` in Proton Drive. |
 | `SYNC_DIRS` | Documents, Pictures | Folders to back up. `$HOME` and `~` are expanded. |
+| `EXCLUDE_DIRS` | none | Folders **inside** the ones above that are never backed up, e.g. `"$HOME/Documents/Old stuff"`. Only that exact folder is skipped (a folder with the same name elsewhere is still backed up). Copies already in Proton Drive are kept. Easiest from the app: **Folders → Exclude a Folder…** |
 | `SYNC_MODE` | `copy` | `copy`, `sync` or `bisync`. |
 | `NOTIFY` | `true` | Desktop notification after each sync. |
 | `LOG_FILE` | `~/.local/share/proton-sync.log` | Where the log goes. |

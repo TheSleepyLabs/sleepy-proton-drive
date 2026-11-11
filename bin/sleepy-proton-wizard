@@ -41,6 +41,7 @@ fi
 REMOTE_NAME="protondrive"
 DEVICE_NAME=""
 SYNC_DIRS=("$HOME/Documents" "$HOME/Pictures")
+EXCLUDE_DIRS=()
 SYNC_MODE="copy"
 NOTIFY=true
 LOG_FILE="$HOME/.local/share/proton-sync.log"
@@ -267,6 +268,41 @@ fi
 SYNC_DIRS=()
 [[ ${#NEW_DIRS[@]} -gt 0 ]] && SYNC_DIRS=("${NEW_DIRS[@]}")
 
+# Excluded folders: folders inside the ones above that are never backed up.
+inside_synced() {
+    local d
+    for d in "${SYNC_DIRS[@]}"; do
+        d="${d/#\~/$HOME}"; d="${d%/}"
+        [[ "$1" == "$d"/* ]] && return 0
+    done
+    return 1
+}
+NEW_EX=()
+for e in "${EXCLUDE_DIRS[@]}"; do
+    e="${e/#\~/$HOME}"; e="${e%/}"
+    if inside_synced "$e" && yes_no "Keep excluding '$e' (not backed up)?" Y; then
+        NEW_EX+=("$e")
+    fi
+done
+if [[ ${#SYNC_DIRS[@]} -gt 0 ]]; then
+    echo -e "${CLR_DIM}You can exclude folders inside the ones above (they won't be backed up; copies already in Proton Drive are kept).${CLR_RESET}"
+    while true; do
+        ask "Exclude a folder? Type its path, or press Enter to continue" ""
+        [[ -z "$REPLY" ]] && break
+        ex="${REPLY/#\~/$HOME}"
+        ex="${ex%/}"
+        if ! inside_synced "$ex"; then
+            echo -e "${CLR_AMBER}'$ex' isn't inside a backed-up folder. Not added.${CLR_RESET}"
+        elif [[ ! -d "$ex" ]]; then
+            echo -e "${CLR_AMBER}'$ex' doesn't exist. Not added.${CLR_RESET}"
+        else
+            NEW_EX+=("$ex"); echo -e "${CLR_EMERALD}✓ Excluded $ex${CLR_RESET}"
+        fi
+    done
+fi
+EXCLUDE_DIRS=()
+[[ ${#NEW_EX[@]} -gt 0 ]] && EXCLUDE_DIRS=("${NEW_EX[@]}")
+
 # ------------------------------------------------------------------------------
 step_banner "5/6" "How should it sync?"
 # ------------------------------------------------------------------------------
@@ -338,6 +374,12 @@ TMP_CONF="$(mktemp "$CONFIG_FILE.XXXXXX")"
     echo
     echo "SYNC_DIRS=("
     for d in "${SYNC_DIRS[@]}"; do echo "    $(dq_path "$d")"; done
+    echo ")"
+    echo
+    echo "# Folders inside the ones above that are never backed up."
+    echo "# Copies already in Proton Drive are kept."
+    echo "EXCLUDE_DIRS=("
+    for d in "${EXCLUDE_DIRS[@]}"; do echo "    $(dq_path "$d")"; done
     echo ")"
     echo
     echo "# copy = safest (never deletes in Proton) | sync = mirror | bisync = two-way"

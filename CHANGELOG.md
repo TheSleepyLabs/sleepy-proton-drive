@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-11-12
+
+### Added
+- **Exclude folders**: leave specific folders out of a backup (for example back up `~/Documents`
+  but not `~/Documents/Old stuff`). In the app: **Folders → Exclude a Folder…**; in the config:
+  `EXCLUDE_DIRS`; the terminal wizard asks too. Only that exact folder is skipped, and its copy
+  already in Proton Drive is kept, even in mirror mode.
+- `sleepy-proton-sync --status` lists excluded folders.
+
 ## [1.2.0] - 2026-11-09
 
 ### Added

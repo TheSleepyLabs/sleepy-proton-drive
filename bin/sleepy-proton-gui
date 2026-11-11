@@ -17,7 +17,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 VENV_PYTHON = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "sleepy-proton-drive" / "venv" / "bin" / "python"
 
 try:
@@ -115,6 +115,20 @@ def bash_path(path: str) -> str:
     if path.startswith(home + "/"):
         return '"$HOME' + bash_dq(path[len(home):])[1:]
     return bash_dq(path)
+
+
+def path_inside(child: str, parent: str) -> bool:
+    """True if child is a folder somewhere below parent (as written or with links resolved)."""
+    for c, p in ((child, parent), (os.path.realpath(child), os.path.realpath(parent))):
+        if c.startswith(p.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def short_home(path: str) -> str:
+    """Shows /home/<you>/x as ~/x."""
+    home = str(Path.home())
+    return "~" + path[len(home):] if path == home or path.startswith(home + "/") else path
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -478,11 +492,12 @@ def create_scrollable_container(content_widget: QWidget) -> QScrollArea:
 _DUMP_CONFIG = r"""
 REMOTE_NAME=protondrive; DEVICE_NAME=""; SYNC_MODE=copy; NOTIFY=true
 LOG_FILE="$HOME/.local/share/proton-sync.log"; LOG_MAX_LINES=5000
-SYNC_DIRS=(); RCLONE_FLAGS=()
+SYNC_DIRS=(); RCLONE_FLAGS=(); EXCLUDE_DIRS=()
 source "$1" >/dev/null 2>&1 || exit 3
 printf '%s\0' "$REMOTE_NAME" "$DEVICE_NAME" "$SYNC_MODE" "$NOTIFY" "$LOG_FILE" "$LOG_MAX_LINES"
 printf '%s\0' "${#SYNC_DIRS[@]}" "${SYNC_DIRS[@]}"
 printf '%s\0' "${#RCLONE_FLAGS[@]}" "${RCLONE_FLAGS[@]}"
+printf '%s\0' "${#EXCLUDE_DIRS[@]}" "${EXCLUDE_DIRS[@]}"
 """
 
 
@@ -499,6 +514,7 @@ class ConfigManager:
         self.remote_name = "protondrive"
         self.device_name = os.uname().nodename
         self.sync_dirs = [str(Path.home() / "Documents"), str(Path.home() / "Pictures")]
+        self.exclude_dirs = []
         self.sync_mode = "copy"
         self.notify = True
         self.log_file = str(DEFAULT_LOG_PATH)
@@ -528,7 +544,9 @@ class ConfigManager:
             n_dirs = int(vals[idx]); idx += 1
             dirs = vals[idx:idx + n_dirs]; idx += n_dirs
             n_flags = int(vals[idx]); idx += 1
-            flags = vals[idx:idx + n_flags]
+            flags = vals[idx:idx + n_flags]; idx += n_flags
+            n_ex = int(vals[idx]); idx += 1
+            ex_dirs = vals[idx:idx + n_ex]
         except (ValueError, IndexError):
             self.load_error = f"Couldn't understand {self.path}. Defaults are shown."
             self.set_defaults()
@@ -545,6 +563,7 @@ class ConfigManager:
         except ValueError:
             self.log_max_lines = 5000
         self.sync_dirs = [os.path.expanduser(d).rstrip("/") or "/" for d in dirs]
+        self.exclude_dirs = [os.path.expanduser(d).rstrip("/") for d in ex_dirs if d.strip("/ ")]
 
         self.excludes, self.other_flags, self.bwlimit = [], [], ""
         i = 0
@@ -581,6 +600,12 @@ class ConfigManager:
             "",
             "SYNC_DIRS=(",
             *[f"    {bash_path(d)}" for d in self.sync_dirs],
+            ")",
+            "",
+            "# Folders inside the ones above that are never backed up.",
+            "# Copies already in Proton Drive are kept.",
+            "EXCLUDE_DIRS=(",
+            *[f"    {bash_path(d)}" for d in self.exclude_dirs],
             ")",
             "",
             "# copy = safest (never deletes in Proton) | sync = mirror | bisync = two-way",
@@ -1398,51 +1423,85 @@ class MainWindow(QMainWindow):
     # Tab 2: Folders
     # --------------------------------------------------------------------------
     def setup_tab_folders(self):
-        tab_widget = QWidget()
-        layout = QVBoxLayout(tab_widget)
+        container = QWidget()
+        layout = QVBoxLayout(container)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(10)
+        layout.setSpacing(14)
 
-        lbl_desc = QLabel("Synced Local Directories (Stored on cloud under Devices/<DeviceName>/<FolderName>):")
+        # Backed-up folders
+        grp_sync = QGroupBox("Backed-up Folders")
+        s_layout = QVBoxLayout(grp_sync)
+        s_layout.setSpacing(8)
+        lbl_desc = QLabel("Each folder is stored in Proton Drive under Devices/<computer name>/<folder name>.")
         lbl_desc.setStyleSheet("color: #9d8ec2; font-size: 12px;")
-        layout.addWidget(lbl_desc)
+        lbl_desc.setWordWrap(True)
+        s_layout.addWidget(lbl_desc)
 
         self.folders_list = QListWidget()
+        self.folders_list.setMinimumHeight(150)
         self.folders_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.refresh_folder_list()
-        layout.addWidget(self.folders_list, 1)
+        self.folders_list.itemDoubleClicked.connect(lambda *_: self.open_selected_folder())
+        s_layout.addWidget(self.folders_list, 1)
 
         h_btns = QHBoxLayout()
         h_btns.setSpacing(10)
-
         btn_add = QPushButton("+ Add Folder...")
         btn_add.setObjectName("btnPrimary")
         btn_add.clicked.connect(self.add_sync_folder)
-
         btn_rem = QPushButton("- Remove Selected")
         btn_rem.clicked.connect(self.remove_sync_folder)
-
         btn_open = QPushButton("📂 Open in File Manager")
         btn_open.clicked.connect(self.open_selected_folder)
-
-        h_btns.addWidget(btn_add)
-        h_btns.addWidget(btn_rem)
-        h_btns.addWidget(btn_open)
+        for b in (btn_add, btn_rem, btn_open):
+            h_btns.addWidget(b)
         h_btns.addStretch()
-        layout.addLayout(h_btns)
+        s_layout.addLayout(h_btns)
+        layout.addWidget(grp_sync, 3)
 
-        # Informational Note Card
+        # Excluded folders
+        grp_ex = QGroupBox("Excluded Folders (never backed up)")
+        x_layout = QVBoxLayout(grp_ex)
+        x_layout.setSpacing(8)
+        lbl_ex = QLabel("Pick any folder inside a backed-up folder to stop backing it up, with everything in it. "
+                        "Its copy already in Proton Drive is kept (delete it there yourself if you don't want it).")
+        lbl_ex.setStyleSheet("color: #9d8ec2; font-size: 12px;")
+        lbl_ex.setWordWrap(True)
+        x_layout.addWidget(lbl_ex)
+
+        self.excluded_list = QListWidget()
+        self.excluded_list.setMinimumHeight(110)
+        self.excluded_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.excluded_list.itemDoubleClicked.connect(lambda *_: self.open_selected_excluded())
+        x_layout.addWidget(self.excluded_list, 1)
+
+        h_ex = QHBoxLayout()
+        h_ex.setSpacing(10)
+        btn_ex_add = QPushButton("🚫 Exclude a Folder...")
+        btn_ex_add.setObjectName("btnPrimary")
+        btn_ex_add.clicked.connect(self.add_excluded_folder)
+        btn_ex_rem = QPushButton("↺ Stop Excluding Selected")
+        btn_ex_rem.clicked.connect(self.remove_excluded_folder)
+        btn_ex_open = QPushButton("📂 Open in File Manager")
+        btn_ex_open.clicked.connect(self.open_selected_excluded)
+        for b in (btn_ex_add, btn_ex_rem, btn_ex_open):
+            h_ex.addWidget(b)
+        h_ex.addStretch()
+        x_layout.addLayout(h_ex)
+        layout.addWidget(grp_ex, 2)
+
         hint_card = QFrame()
         hint_card.setObjectName("card")
         hc_layout = QHBoxLayout(hint_card)
         hc_layout.setContentsMargins(14, 10, 14, 10)
-        lbl_hint = QLabel("💡 Tip: You can sync any folder from your home directory. Proton Drive keeps them partitioned per-device.")
+        lbl_hint = QLabel("💡 Tip: to skip things by name everywhere (like every node_modules folder or *.iso file), "
+                          "use \"Skip These Files & Folders\" on the Settings tab.")
         lbl_hint.setStyleSheet("color: #38bdf8; font-size: 12px;")
         lbl_hint.setWordWrap(True)
         hc_layout.addWidget(lbl_hint)
         layout.addWidget(hint_card)
 
-        self.tabs.addTab(tab_widget, "📁 Folders")
+        self.refresh_folder_list()
+        self.tabs.addTab(create_scrollable_container(container), "📁 Folders")
 
     def refresh_folder_list(self):
         self.folders_list.clear()
@@ -1455,6 +1514,84 @@ class MainWindow(QMainWindow):
                 item.setText(f"📁 {f}")
             item.setData(Qt.UserRole, f)
             self.folders_list.addItem(item)
+        self.refresh_excluded_list()
+
+    def refresh_excluded_list(self):
+        self.excluded_list.clear()
+        if not self.config.exclude_dirs:
+            item = QListWidgetItem("Nothing excluded. Everything in the folders above is backed up.")
+            item.setForeground(QColor("#9d8ec2"))
+            item.setFlags(Qt.NoItemFlags)
+            self.excluded_list.addItem(item)
+            return
+        for f in self.config.exclude_dirs:
+            item = QListWidgetItem(f"🚫 {short_home(f)}")
+            if not any(path_inside(f, d) for d in self.config.sync_dirs):
+                item.setText(f"🚫 {short_home(f)}  (not inside a backed-up folder, so it has no effect)")
+                item.setForeground(QColor("#f5b65a"))
+            elif not os.path.isdir(f):
+                item.setText(f"🚫 {short_home(f)}  (folder not found right now)")
+                item.setForeground(QColor("#9d8ec2"))
+            item.setToolTip(f)
+            item.setData(Qt.UserRole, f)
+            self.excluded_list.addItem(item)
+
+    def add_excluded_folder(self):
+        if not self.config.sync_dirs:
+            QMessageBox.information(self, "No backed-up folders", "Add a folder to back up first, then you can exclude folders inside it.")
+            return
+        cur = self.folders_list.currentItem()
+        start = cur.data(Qt.UserRole) if cur else self.config.sync_dirs[0]
+        if not os.path.isdir(start):
+            start = str(Path.home())
+        folder = QFileDialog.getExistingDirectory(self, "Pick a folder to stop backing up", start)
+        if not folder:
+            return
+        folder = folder.rstrip("/") or "/"
+        if any(folder == d or os.path.realpath(folder) == os.path.realpath(d) for d in self.config.sync_dirs):
+            QMessageBox.information(
+                self, "That's a backed-up folder",
+                f"'{short_home(folder)}' is one of your backed-up folders.\n\n"
+                "To stop backing it up completely, select it in the list above and click \"Remove Selected\".")
+            return
+        if not any(path_inside(folder, d) for d in self.config.sync_dirs):
+            QMessageBox.warning(
+                self, "Not inside a backed-up folder",
+                f"'{short_home(folder)}' isn't inside any of your backed-up folders, so it isn't being backed up anyway.\n\n"
+                "Pick a folder inside one of the folders in the list above.")
+            return
+        if folder in self.config.exclude_dirs or any(path_inside(folder, e) for e in self.config.exclude_dirs):
+            self.status_bar.showMessage(f"Already excluded: {short_home(folder)}", 4000)
+            return
+        # Excluding a parent makes excluded folders inside it redundant.
+        self.config.exclude_dirs = [e for e in self.config.exclude_dirs if not path_inside(e, folder)]
+        self.config.exclude_dirs.append(folder)
+        self.config.exclude_dirs.sort(key=str.lower)
+        if self.save_config_or_warn():
+            self.status_bar.showMessage(f"Excluded: {short_home(folder)} (it won't be backed up from the next sync)", 5000)
+        self.refresh_excluded_list()
+
+    def remove_excluded_folder(self):
+        item = self.excluded_list.currentItem()
+        folder = item.data(Qt.UserRole) if item else None
+        if not folder:
+            self.status_bar.showMessage("Select an excluded folder first.", 3000)
+            return
+        if folder in self.config.exclude_dirs:
+            self.config.exclude_dirs.remove(folder)
+            if self.save_config_or_warn():
+                self.status_bar.showMessage(f"{short_home(folder)} will be backed up again from the next sync.", 5000)
+        self.refresh_excluded_list()
+
+    def open_selected_excluded(self):
+        item = self.excluded_list.currentItem()
+        folder = item.data(Qt.UserRole) if item else None
+        if not folder:
+            return
+        if os.path.isdir(folder):
+            self.open_path(folder)
+        else:
+            QMessageBox.warning(self, "Folder not found", f"This folder doesn't exist right now:\n{folder}")
 
     def add_sync_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Directory to Sync", str(Path.home()))
@@ -1496,6 +1633,10 @@ class MainWindow(QMainWindow):
             folder = item.data(Qt.UserRole)
             if folder in self.config.sync_dirs:
                 self.config.sync_dirs.remove(folder)
+                # Exclusions inside a folder that's no longer backed up do nothing; drop them.
+                self.config.exclude_dirs = [
+                    e for e in self.config.exclude_dirs
+                    if not path_inside(e, folder) or any(path_inside(e, d) for d in self.config.sync_dirs)]
                 self.save_config_or_warn()
                 self.refresh_folder_list()
                 self.status_bar.showMessage(f"Removed folder: {folder}", 3500)

@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 UNIT_NAME="sleepy-proton-sync"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -26,6 +26,7 @@ BISYNC_STATE_DIR="$STATE_HOME/sleepy-proton-drive/bisync"
 REMOTE_NAME="protondrive"
 DEVICE_NAME=""
 SYNC_DIRS=("$HOME/Documents")
+EXCLUDE_DIRS=()
 SYNC_MODE="copy"
 NOTIFY=true
 LOG_FILE="$HOME/.local/share/proton-sync.log"
@@ -142,6 +143,35 @@ expand_path() {
         \~/*) p="$HOME/${p#\~/}" ;;
     esac
     printf '%s' "$p"
+}
+
+# Escape rclone glob characters so a folder name is matched literally.
+glob_escape() {
+    local s="$1" out="" c i
+    for (( i = 0; i < ${#s}; i++ )); do
+        c="${s:i:1}"
+        case "$c" in
+            \\|'*'|'?'|'['|']'|'{'|'}') out+="\\$c" ;;
+            *) out+="$c" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# Prints the path of excluded folder $2 relative to synced folder $1, or
+# nothing if it isn't inside it. Checks the path as written and with links
+# resolved, so a folder reached through a symlink still matches.
+relative_inside() {
+    local src="$1" ex="$2" real_src real_ex
+    if [[ "$ex" == "$src"/* ]]; then
+        printf '%s' "${ex#"$src"/}"; return 0
+    fi
+    real_src="$(readlink -f -- "$src" 2>/dev/null || true)"
+    real_ex="$(readlink -f -- "$ex" 2>/dev/null || true)"
+    if [[ -n "$real_src" && -n "$real_ex" && "$real_ex" == "$real_src"/* ]]; then
+        printf '%s' "${real_ex#"$real_src"/}"; return 0
+    fi
+    return 0
 }
 
 # ------------------------------------------------------------------------------
@@ -330,6 +360,10 @@ case "$ACTION" in
         echo "  Mode:   $SYNC_MODE"
         echo "  Folders:"
         for d in "${SYNC_DIRS[@]}"; do echo "    - $(expand_path "$d")"; done
+        if [[ ${#EXCLUDE_DIRS[@]} -gt 0 ]]; then
+            echo "  Excluded folders (never backed up):"
+            for d in "${EXCLUDE_DIRS[@]}"; do echo "    - $(expand_path "$d")"; done
+        fi
         echo "  Log:    $LOG_FILE"
         echo "  Timer:  $(timer_status)"
         exit 0 ;;
@@ -463,10 +497,23 @@ for raw_dir in "${SYNC_DIRS[@]}"; do
 
     log ">>> '$src_dir' -> '$dest' [$SYNC_MODE]"
 
+    # Excluded folders inside this one: anchored rules so only that exact
+    # folder is skipped. Its copy already in Proton Drive is left alone.
+    DIR_FLAGS=()
+    for raw_ex in "${EXCLUDE_DIRS[@]}"; do
+        ex="$(expand_path "$raw_ex")"
+        ex="${ex%/}"
+        [[ -n "$ex" ]] || continue
+        rel="$(relative_inside "$src_dir" "$ex")"
+        [[ -n "$rel" ]] || continue
+        DIR_FLAGS+=("--exclude" "/$(glob_escape "$rel")/**")
+        log "Excluding folder: '$ex'"
+    done
+
     rc=0
     case "$SYNC_MODE" in
-        copy) run_rclone copy "$src_dir" "$dest" "${FLAGS[@]}" || rc=$? ;;
-        sync) run_rclone sync "$src_dir" "$dest" "${FLAGS[@]}" || rc=$? ;;
+        copy) run_rclone copy "$src_dir" "$dest" "${DIR_FLAGS[@]}" "${FLAGS[@]}" || rc=$? ;;
+        sync) run_rclone sync "$src_dir" "$dest" "${DIR_FLAGS[@]}" "${FLAGS[@]}" || rc=$? ;;
         bisync)
             key="$(printf '%s' "${REMOTE_NAME}|${DEVICE_NAME}|${src_dir}" | cksum | cut -d' ' -f1)"
             marker="$BISYNC_STATE_DIR/$key.done"
@@ -476,7 +523,7 @@ for raw_dir in "${SYNC_DIRS[@]}"; do
                 extra+=("--resync")
             fi
             run_rclone mkdir "$dest" || true
-            run_rclone bisync "$src_dir" "$dest" "${extra[@]}" "${FLAGS[@]}" || rc=$?
+            run_rclone bisync "$src_dir" "$dest" "${extra[@]}" "${DIR_FLAGS[@]}" "${FLAGS[@]}" || rc=$?
             if [[ $rc -eq 0 && "$DRY_RUN" != "true" ]]; then
                 mkdir -p "$BISYNC_STATE_DIR"
                 touch "$marker"

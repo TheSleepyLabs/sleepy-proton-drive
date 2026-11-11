@@ -55,6 +55,37 @@ echo fromcloud2 > "$CLOUD/Documents/d.txt"
 "$ENGINE" --mode bisync >/dev/null
 check "bisync brings cloud files down" '[[ -f "$HOME/Documents/c.txt" && -f "$HOME/Documents/d.txt" ]]'
 
+# Excluded folders: only that exact folder is skipped (odd characters included),
+# a folder with the same name elsewhere is still backed up, and the cloud copy
+# of an excluded folder is kept even in mirror mode.
+W="$HOME/Work"
+mkdir -p "$W/skip me [x]/deep" "$W/other/skip me [x]" "$W/Old"
+echo a > "$W/top.txt"
+echo b > "$W/skip me [x]/deep/secret.txt"
+echo c > "$W/other/skip me [x]/keep.txt"
+echo d > "$W/Old/old.txt"
+cat > "$T/ex.conf" <<'CONF'
+REMOTE_NAME="protondrive"
+DEVICE_NAME="TestBox"
+SYNC_DIRS=("$HOME/Work")
+EXCLUDE_DIRS=("$HOME/Work/skip me [x]/" "~/Work/Old" "$HOME/Elsewhere/x")
+SYNC_MODE="copy"
+NOTIFY=false
+CONF
+WC="$CLOUD/Work"
+mkdir -p "$WC/Old" && echo cloud > "$WC/Old/old.txt"
+"$ENGINE" -c "$T/ex.conf" >/dev/null
+check "excluded folder is not uploaded" '[[ -f "$WC/top.txt" && ! -e "$WC/skip me [x]" ]]'
+check "same-named folder elsewhere is still uploaded" '[[ -f "$WC/other/skip me [x]/keep.txt" ]]'
+check "excluded folder (written with ~) is not uploaded" '[[ "$(cat "$WC/Old/old.txt")" == cloud ]]'
+"$ENGINE" -c "$T/ex.conf" --mode sync >/dev/null
+check "mirror mode keeps the cloud copy of an excluded folder" '[[ -f "$WC/Old/old.txt" && ! -e "$WC/skip me [x]" ]]'
+"$ENGINE" -c "$T/ex.conf" --mode bisync >/dev/null
+echo e > "$W/skip me [x]/new.txt"
+"$ENGINE" -c "$T/ex.conf" --mode bisync >/dev/null
+check "two-way mode skips the excluded folder both ways" '[[ ! -e "$WC/skip me [x]" && "$(cat "$W/Old/old.txt")" == d ]]'
+grep -q "Excluded folders" <<< "$("$ENGINE" -c "$T/ex.conf" --status)" && ok "--status lists excluded folders" || fail "--status excluded"
+
 "$ENGINE" --mode nonsense >/dev/null 2>&1 && fail "bad mode accepted" || ok "rejects an unknown mode"
 grep -q "TestBox" <<< "$("$ENGINE" --status)" && ok "--status works" || fail "--status"
 bash -n "$HOME/.config/proton-sync.conf" && ok "config is valid bash"

@@ -163,3 +163,4 @@ jobs:
           schtasks.exe /Query /TN "Sleepy Proton Drive Sync" 2>&1 | Out-Null
           if ($LASTEXITCODE -eq 0) { throw "scheduled task left behind" }
           Write-Host "Installer round trip OK"
+          exit 0  # the schtasks query above is MEANT to fail; don't let its exit code fail the step

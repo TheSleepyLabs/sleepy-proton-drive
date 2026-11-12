@@ -16,14 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   photos removed by mirror/two-way Photos go to the Recycle Bin, and notifications are Windows
   toasts. Uninstall with `uninstall.cmd` (`-Purge` also removes settings and history).
 - `sleepy-proton-photos --stop` stops a running Photos download.
-- Automatic tests on Windows (GitHub's `windows-latest`) and on Python 3.9 and 3.13.
+- Automatic tests on Windows (GitHub's `windows-latest`) and on Python 3.10 and 3.13.
 
 ### Changed
 - The sync engine is now Python (`sleepy_proton` package) instead of Bash, so Linux and Windows
   share one codebase. Commands, options, messages, settings file and saved two-way state are
   unchanged, so an existing setup keeps working after `./install.sh`.
 - Linux: program files are installed to `~/.local/share/sleepy-proton-drive/app`; the
-  `sleepy-proton-*` commands in `~/.local/bin` start them. Python 3.9+ is now required for
+  `sleepy-proton-*` commands in `~/.local/bin` start them. Python 3.10+ is now required for
   syncing (not only for the app).
 
 ### Fixed

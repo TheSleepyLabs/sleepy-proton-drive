@@ -285,9 +285,10 @@ PHOTOS_DATES=({dates})
     s.photos_categories = ["videos", "raw"]
     C.save(s, T / "round.conf")
     back = C.Settings(T / "round.conf")
+    norm = lambda xs: [os.path.normcase(os.path.normpath(x)) for x in xs]  # noqa: E731  (\\ and / are the same on Windows)
     check("config round trip keeps every value",
-          (back.sync_dirs, back.exclude_dirs, back.photos_categories, back.rclone_flags)
-          == (s.sync_dirs, s.exclude_dirs, s.photos_categories, s.rclone_flags),
+          (norm(back.sync_dirs), norm(back.exclude_dirs), back.photos_categories, back.rclone_flags)
+          == (norm(s.sync_dirs), norm(s.exclude_dirs), s.photos_categories, s.rclone_flags),
           f"{back.__dict__}\n{s.__dict__}")
     check("config file stores home paths as $HOME/...", '"$HOME/Documents"' in (T / "round.conf").read_text())
     if shutil.which("bash") and not IS_WINDOWS:

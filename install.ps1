@@ -64,13 +64,13 @@ function Test-Python($exe) {
     $old = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        $out = & $exe -c "import sys; print(sys.version_info >= (3, 9) and 'ok' or 'old')" 2>$null
+        $out = & $exe -c "import sys; print(sys.version_info >= (3, 10) and 'ok' or 'old')" 2>$null
         return ($LASTEXITCODE -eq 0 -and "$out".Trim() -eq "ok")
     } catch { return $false } finally { $ErrorActionPreference = $old }
 }
 
 function Find-Python {
-    if ($Python) { if (Test-Python $Python) { return $Python } else { throw "$Python isn't Python 3.9 or newer." } }
+    if ($Python) { if (Test-Python $Python) { return $Python } else { throw "$Python isn't Python 3.10 or newer." } }
     $py = Get-Command py -ErrorAction SilentlyContinue
     if ($py) {
         $old = $ErrorActionPreference
@@ -131,7 +131,7 @@ if (-not $pyExe -and -not $NoDeps) {
         $pyExe = Find-Python
     }
 }
-if (-not $pyExe) { throw "Python 3.9 or newer is needed. Install it from https://www.python.org/downloads/ and run this again." }
+if (-not $pyExe) { throw "Python 3.10 or newer is needed. Install it from https://www.python.org/downloads/ and run this again." }
 Say "    Python: $pyExe" "Green"
 
 $rclone = Find-Rclone

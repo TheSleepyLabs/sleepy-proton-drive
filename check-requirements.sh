@@ -10,7 +10,7 @@
 set -uo pipefail
 
 MIN_RCLONE_VER="1.63.0"
-MIN_PYTHON_VER="3.9"
+MIN_PYTHON_VER="3.10"
 VENV_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/sleepy-proton-drive/venv"
 CONFIG_FILE="${PROTON_SYNC_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/proton-sync.conf}"
 

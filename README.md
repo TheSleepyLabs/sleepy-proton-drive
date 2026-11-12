@@ -97,7 +97,7 @@ sync to see exactly what will happen.
 |---|---|---|
 | Linux or Windows 10/11 | | Linux: tested on Fedora/Nobara; should work on Ubuntu/Debian, Arch, openSUSE and others. Windows: tested automatically on every change (GitHub's Windows Server runners). |
 | [rclone](https://rclone.org) **1.63 or newer** | Talks to Proton Drive | `./install.sh` installs it if missing. Debian/Ubuntu's packaged rclone is usually too old, so the official rclone installer is used there. |
-| Python 3.9+ | Runs the sync | Included in every current distro. On Windows the installer offers to install it. |
+| Python 3.10+ | Runs the sync | Included in every current distro. On Windows the installer offers to install it. |
 | PySide6 | Only for the app | Linux: installed from your distro, or into a private folder (`~/.local/share/sleepy-proton-drive/venv`) if your distro doesn't package it; the terminal tools work without it. Windows: always installed into the app's own folder. |
 | Bash 4.4+ | Linux terminal wizard and checker | Included in every current distro. |
 | systemd (user session) | Only for background sync on Linux | Without it, sync by hand or from cron. Windows uses Task Scheduler. |

@@ -161,13 +161,13 @@ else
     fail "rclone is not installed." "Run: sleepy-proton-check --fix   (or see https://rclone.org/install/)"
 fi
 
-# 3. Python + PySide6 (GUI only)
+# 3. Python (runs the sync engine) + PySide6 (GUI only)
 if command -v python3 &>/dev/null; then
     PY_VER="$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || echo 0)"
     if version_ge "$PY_VER" "$MIN_PYTHON_VER"; then
         pass "Python ${CLR_BOLD}${PY_VER}${CLR_RESET}"
     else
-        warn "Python $PY_VER is too old for the GUI (needs $MIN_PYTHON_VER+)." "The terminal tools still work."
+        fail "Python $PY_VER is too old (needs $MIN_PYTHON_VER+)." "Install a newer python3 with your package manager."
     fi
     pyside_ok() {
         python3 -c "import PySide6.QtWidgets" &>/dev/null || \
@@ -184,7 +184,7 @@ if command -v python3 &>/dev/null; then
         warn "PySide6 is not installed, so the GUI won't open." "The terminal tools work without it. To add it: sleepy-proton-check --fix"
     fi
 else
-    warn "Python 3 not found." "Only needed for the GUI."
+    fail "Python 3 not found (it runs the sync)." "Install it with your package manager, e.g. sudo dnf install python3"
 fi
 
 # 4. systemd user timers

@@ -4,24 +4,27 @@
 
 # Sleepy Proton Drive
 
-**Automatic Proton Drive backups for Linux, with a friendly app and a terminal mode.**
+**Automatic Proton Drive backups for Linux and Windows, with a friendly app and a terminal mode.**
 By [The Sleepy Labs](https://thesleepylabs.net)
 
 [![CI](https://github.com/TheSleepyLabs/sleepy-proton-drive/actions/workflows/ci.yml/badge.svg)](https://github.com/TheSleepyLabs/sleepy-proton-drive/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-8b5cf6.svg)](LICENSE)
-[![Platform: Linux](https://img.shields.io/badge/Platform-Linux-38bdf8.svg)](#requirements)
+[![Platform: Linux | Windows](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%2011-38bdf8.svg)](#requirements)
 [![Engine: rclone](https://img.shields.io/badge/Engine-rclone%20%E2%89%A51.63-10b981.svg)](https://rclone.org/protondrive/)
 
 </div>
 
 Proton has Drive apps for Windows, macOS and phones, but not for Linux.
 Sleepy Proton Drive fills that gap: pick the folders you want, and it backs them up to
-your Proton Drive automatically in the background. It's built on
+your Proton Drive automatically in the background. Since v2.0 the same app also runs on
+**Windows 10/11**, handy if you want one tool (and the same `Devices/<name>/` layout, mirror and
+two-way modes, and Proton Photos download) on all your computers. It's built on
 [rclone](https://rclone.org/protondrive/), so your files stay end-to-end encrypted.
 
 - **Setup wizard** (app or terminal): log in (2FA supported), pick folders, done.
 - **Three sync modes**: `copy` (safest, the default), `sync` (mirror) and `bisync` (two-way).
-- **Background sync** every 15 min to once a day, with a systemd user timer (no root needed).
+- **Background sync** every 15 min to once a day: a systemd user timer on Linux, a Task
+  Scheduler task on Windows (no root/admin needed).
 - **Safety checks**: dry-run preview, and folders that are empty (for example an unplugged
   drive) are skipped in mirror/two-way mode so they can't wipe your cloud copy.
 - **Exclude folders**: back up `~/Documents` but leave out `~/Documents/Old stuff`.
@@ -43,6 +46,8 @@ your Proton Drive automatically in the background. It's built on
 ---
 
 ## Quick start
+
+### Linux
 
 ```bash
 git clone https://github.com/TheSleepyLabs/sleepy-proton-drive.git
@@ -68,6 +73,21 @@ The wizard asks for:
 4. **Sync mode** (see below). If you're unsure, keep `copy`.
 5. **Background sync**: how often to sync automatically, or off.
 
+### Windows 10/11
+
+1. Download the code: **Code → Download ZIP** on GitHub, then right-click the ZIP → **Extract All**.
+2. Open the extracted folder and double-click **`install.cmd`**.
+   If Windows shows "Windows protected your PC", click **More info → Run anyway**
+   (the installer isn't signed).
+3. The installer asks before installing anything that's missing (Python and rclone, through
+   Windows' own `winget`), then installs the app for your user only (no admin rights needed).
+4. Open **Sleepy Proton Drive** from the Start menu. The setup wizard opens the first time.
+
+Everything lives in `%LOCALAPPDATA%\Sleepy Proton Drive` (settings in
+`%APPDATA%\Sleepy Proton Drive\proton-sync.conf`). The commands below work in a new
+terminal too (`sleepy-proton-sync --status`, …). Add `-DesktopShortcut` to put a shortcut on
+the Desktop: `install.cmd -DesktopShortcut`.
+
 Tip: click **🔍 Dry-Run Preview** (or run `sleepy-proton-sync --dry-run`) before the first real
 sync to see exactly what will happen.
 
@@ -75,13 +95,14 @@ sync to see exactly what will happen.
 
 | What | Why | Notes |
 |---|---|---|
-| Linux | | Tested on Fedora/Nobara. Should work on Ubuntu/Debian, Arch, openSUSE and others. |
+| Linux or Windows 10/11 | | Linux: tested on Fedora/Nobara; should work on Ubuntu/Debian, Arch, openSUSE and others. Windows: tested automatically on every change (GitHub's Windows Server runners). |
 | [rclone](https://rclone.org) **1.63 or newer** | Talks to Proton Drive | `./install.sh` installs it if missing. Debian/Ubuntu's packaged rclone is usually too old, so the official rclone installer is used there. |
-| Bash 4.4+ | Sync engine & wizard | Included in every current distro. |
-| Python 3.9+ and PySide6 | Only for the app | Installed from your distro, or into a private folder (`~/.local/share/sleepy-proton-drive/venv`) if your distro doesn't package it. The terminal tools work without it. |
-| systemd (user session) | Only for background sync | Without it, sync by hand or from cron. |
-| Proton's [`proton-drive`](https://proton.me/drive/download) tool | Only for Proton Photos | One click in the app's 📷 Photos tab (or `sleepy-proton-photos --install-cli`) downloads Proton's official tool to `~/.local/bin` and checks it against a known SHA-512 checksum. |
-| `notify-send`, `xdg-open` | Optional | Desktop notifications and "open folder" buttons. |
+| Python 3.9+ | Runs the sync | Included in every current distro. On Windows the installer offers to install it. |
+| PySide6 | Only for the app | Linux: installed from your distro, or into a private folder (`~/.local/share/sleepy-proton-drive/venv`) if your distro doesn't package it; the terminal tools work without it. Windows: always installed into the app's own folder. |
+| Bash 4.4+ | Linux terminal wizard and checker | Included in every current distro. |
+| systemd (user session) | Only for background sync on Linux | Without it, sync by hand or from cron. Windows uses Task Scheduler. |
+| Proton's [`proton-drive`](https://proton.me/drive/download) tool | Only for Proton Photos | One click in the app's 📷 Photos tab (or `sleepy-proton-photos --install-cli`) downloads Proton's official tool (to `~/.local/bin`, or the app's `bin` folder on Windows) and checks it against a known SHA-512 checksum. |
+| `notify-send`, `xdg-open` | Optional, Linux | Desktop notifications and "open folder" buttons. Windows has both built in. |
 
 Check everything at any time with `sleepy-proton-check` (or `./check-requirements.sh`), and add
 `--fix` to install what's missing.
@@ -156,7 +177,7 @@ Because folders are stored by name, you can't sync two folders with the same nam
 | Command | What it does |
 |---|---|
 | `sleepy-proton-gui` | Open the app. `--wizard` opens the setup wizard straight away. |
-| `sleepy-proton-wizard` | Set everything up in the terminal. |
+| `sleepy-proton-wizard` | Set everything up in the terminal (Linux; on Windows use the app's wizard). |
 | `sleepy-proton-sync` | Sync now. |
 | `sleepy-proton-sync --dry-run` | Show what would change, without changing anything. |
 | `sleepy-proton-sync --mode sync` | Use a different mode for this one run. |
@@ -168,9 +189,11 @@ Because folders are stored by name, you can't sync two folders with the same nam
 | `sleepy-proton-sync --disable-timer` | Turn off background sync. |
 | `sleepy-proton-photos` | Download Proton Photos now (see [Proton Photos](#proton-photos)). |
 | `sleepy-proton-check [--fix]` | Check (and fix) requirements and your login. |
-| `./uninstall.sh [--purge]` | Remove the app. `--purge` also removes settings and logs. |
+| `sleepy-proton-photos --stop` | Stop a running Photos download. |
+| `./uninstall.sh [--purge]` | Remove the app. `--purge` also removes settings and logs. Windows: `uninstall.cmd [-Purge]`. |
 
-Background sync uses the systemd user units `sleepy-proton-sync.timer` and `.service`:
+On Windows, background sync is the Task Scheduler task **Sleepy Proton Drive Sync**
+(open *Task Scheduler* to see when it runs next). On Linux it uses the systemd user units `sleepy-proton-sync.timer` and `.service`:
 
 ```bash
 systemctl --user list-timers sleepy-proton-sync.timer    # when is the next sync?
@@ -235,6 +258,10 @@ files are skipped, and symlinks are not followed.
 ./uninstall.sh --purge    # also remove settings, logs and saved state
 rclone config delete protondrive   # optional: remove your saved Proton login
 ```
+
+On Windows, double-click **`uninstall.cmd`** in the folder you installed from (or run
+`uninstall.cmd -Purge` to also remove settings, log and history). Your saved Proton login is
+in rclone; remove it with `rclone config delete protondrive`.
 
 Your files in Proton Drive and on this computer are never deleted by uninstalling.
 

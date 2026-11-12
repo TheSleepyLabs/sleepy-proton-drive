@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.0] - 2026-11-12
+
+### Added
+- **Windows 10/11 support.** Double-click `install.cmd`: it offers to install Python and rclone
+  with `winget`, installs the app for your user only (no admin rights), and adds a Start menu
+  shortcut (`-DesktopShortcut` for the Desktop too). Background sync is a Task Scheduler task,
+  photos removed by mirror/two-way Photos go to the Recycle Bin, and notifications are Windows
+  toasts. Uninstall with `uninstall.cmd` (`-Purge` also removes settings and history).
+- `sleepy-proton-photos --stop` stops a running Photos download.
+- Automatic tests on Windows (GitHub's `windows-latest`) and on Python 3.9 and 3.13.
+
+### Changed
+- The sync engine is now Python (`sleepy_proton` package) instead of Bash, so Linux and Windows
+  share one codebase. Commands, options, messages, settings file and saved two-way state are
+  unchanged, so an existing setup keeps working after `./install.sh`.
+- Linux: program files are installed to `~/.local/share/sleepy-proton-drive/app`; the
+  `sleepy-proton-*` commands in `~/.local/bin` start them. Python 3.9+ is now required for
+  syncing (not only for the app).
+
+### Fixed
+- Two-way Photos: a photo you deleted on this computer no longer shows a "no details" warning
+  (it was being looked up again right after it went to Proton's trash).
+
 ## [1.4.0] - 2026-11-12
 
 ### Added

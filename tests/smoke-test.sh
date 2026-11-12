@@ -88,7 +88,7 @@ grep -q "Excluded folders" <<< "$("$ENGINE" -c "$T/ex.conf" --status)" && ok "--
 
 # Proton Photos, against a fake Proton (tests/fake-proton-drive).
 PHOTOS="$ROOT/bin/sleepy-proton-photos"
-export PROTON_DRIVE_BIN="$ROOT/tests/fake-proton-drive" FAKE_PROTON_DIR="$T/fakeproton" XDG_CACHE_HOME="$T/home/.cache"
+export PROTON_DRIVE_BIN="$ROOT/tests/fake-proton-drive.py" FAKE_PROTON_DIR="$T/fakeproton" XDG_CACHE_HOME="$T/home/.cache"
 mkdir -p "$FAKE_PROTON_DIR"
 cat > "$FAKE_PROTON_DIR/photos.json" <<'JSON'
 [{"uid":"u1","name":"IMG_1.jpg","captureTime":"2026-11-09T02:38:45.000Z","tags":[],"content":"one"},

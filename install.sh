@@ -3,7 +3,8 @@
 # The Sleepy Labs // Sleepy Proton Drive - Installer
 # ==============================================================================
 # Installs for the current user only (no root needed):
-#   ~/.local/bin/sleepy-proton-{sync,wizard,gui,check}
+#   ~/.local/bin/sleepy-proton-{sync,photos,wizard,gui,check}
+#   ~/.local/share/sleepy-proton-drive/app/   program files (Python)
 #   app menu entry + icon
 # Run ./install.sh --help for options.
 # ==============================================================================
@@ -88,8 +89,22 @@ fi
 
 mkdir -p "$BIN_DIR" "$ICON_DIR" "$APP_DIR"
 
-# 2. Programs
-echo -e "\n${CLR_CYAN}>>> Installing programs to $BIN_DIR${CLR_RESET}"
+# 2. Programs: the Python program files, then the commands that start them.
+PROGRAM_DIR="$DATA_HOME/sleepy-proton-drive/app"
+echo -e "\n${CLR_CYAN}>>> Installing program files to $PROGRAM_DIR${CLR_RESET}"
+mkdir -p "$PROGRAM_DIR"
+new_pkg="$(mktemp -d "$PROGRAM_DIR/.new.XXXXXX")"
+cp -r "$SCRIPT_DIR/sleepy_proton" "$new_pkg/sleepy_proton"
+find "$new_pkg" -name "__pycache__" -type d -prune -exec rm -rf {} +
+rm -rf "$PROGRAM_DIR/sleepy_proton.old"
+[[ -d "$PROGRAM_DIR/sleepy_proton" ]] && mv "$PROGRAM_DIR/sleepy_proton" "$PROGRAM_DIR/sleepy_proton.old"
+mv "$new_pkg/sleepy_proton" "$PROGRAM_DIR/sleepy_proton"
+rm -rf "$new_pkg" "$PROGRAM_DIR/sleepy_proton.old"
+mkdir -p "$PROGRAM_DIR/assets"
+install -m 644 "$SCRIPT_DIR/assets/sleepy-proton-drive.svg" "$PROGRAM_DIR/assets/sleepy-proton-drive.svg"
+install -m 644 "$SCRIPT_DIR/check-requirements.sh" "$PROGRAM_DIR/check-requirements.sh"
+
+echo -e "${CLR_CYAN}>>> Installing commands to $BIN_DIR${CLR_RESET}"
 install -m 755 "$SCRIPT_DIR/bin/sleepy-proton-sync"   "$BIN_DIR/sleepy-proton-sync"
 install -m 755 "$SCRIPT_DIR/bin/sleepy-proton-wizard" "$BIN_DIR/sleepy-proton-wizard"
 install -m 755 "$SCRIPT_DIR/bin/sleepy-proton-gui"    "$BIN_DIR/sleepy-proton-gui"

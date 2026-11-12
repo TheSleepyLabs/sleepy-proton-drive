@@ -2,8 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, windows]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,13 +20,13 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck --severity=warning -e SC1090,SC1091,SC2034 \
             check-requirements.sh install.sh uninstall.sh tests/smoke-test.sh \
-            bin/sleepy-proton-sync bin/sleepy-proton-wizard
+            bin/sleepy-proton-wizard
 
       - name: Bash syntax
-        run: for f in check-requirements.sh install.sh uninstall.sh bin/sleepy-proton-sync bin/sleepy-proton-wizard config/proton-sync.conf.example; do bash -n "$f"; done
+        run: for f in check-requirements.sh install.sh uninstall.sh bin/sleepy-proton-wizard config/proton-sync.conf.example; do bash -n "$f"; done
 
       - name: Python syntax
-        run: python3 -m py_compile bin/sleepy-proton-gui
+        run: python3 -m py_compile sleepy_proton/*.py tests/*.py bin/sleepy-proton-sync bin/sleepy-proton-photos bin/sleepy-proton-gui
 
       - name: Desktop entry
         run: |
@@ -35,25 +36,130 @@ jobs:
       - name: Executable bits
         run: |
           for f in check-requirements.sh install.sh uninstall.sh tests/smoke-test.sh \
-                   bin/sleepy-proton-sync bin/sleepy-proton-wizard bin/sleepy-proton-gui; do
+                   bin/sleepy-proton-sync bin/sleepy-proton-photos bin/sleepy-proton-wizard bin/sleepy-proton-gui; do
             test -x "$f" || { echo "$f is not executable"; exit 1; }
           done
 
-  smoke-test:
+  linux:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.13"]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
 
-      - name: Install rclone
-        run: curl -fsSL https://rclone.org/install.sh | sudo bash
+      - name: Install rclone + Qt libraries
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+          python -m pip install --disable-pip-version-check PySide6
 
-      - name: Sync engine smoke test (local fake remote, no Proton account)
+      - name: Sync engine smoke test (Bash-era checks, local fake remote)
         run: bash tests/smoke-test.sh
+
+      - name: Sync + Photos smoke test (Python)
+        run: python tests/smoke_test.py
+
+      - name: App window test (offscreen)
+        run: python tests/gui_smoke.py
 
       - name: Installer / uninstaller round trip
         run: |
           ./install.sh --no-deps </dev/null
           test -x "$HOME/.local/bin/sleepy-proton-sync"
-          "$HOME/.local/bin/sleepy-proton-sync" --version
-          ./uninstall.sh --purge
+          test -f "$HOME/.local/share/sleepy-proton-drive/app/sleepy_proton/sync.py"
+          cd / && "$HOME/.local/bin/sleepy-proton-sync" --version && "$HOME/.local/bin/sleepy-proton-photos" --help >/dev/null
+          cd - && ./uninstall.sh --purge
           test ! -e "$HOME/.local/bin/sleepy-proton-sync"
+          test ! -e "$HOME/.local/share/sleepy-proton-drive"
+
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: PowerShell scripts parse
+        shell: powershell
+        run: |
+          foreach ($f in "install.ps1", "uninstall.ps1") {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$errs) | Out-Null
+            if ($errs) { $errs | Format-List | Out-String | Write-Host; exit 1 }
+            Write-Host "$f parses OK"
+          }
+
+      - name: Install rclone
+        shell: pwsh
+        run: |
+          choco install rclone -y --no-progress
+          rclone version
+
+      - name: Sync + Photos smoke test, including Task Scheduler
+        run: python tests/smoke_test.py --timer
+
+      - name: App window test (offscreen)
+        run: |
+          python -m pip install --disable-pip-version-check PySide6
+          python tests/gui_smoke.py
+
+      - name: Installer round trip (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $py = (Get-Command python).Source
+          $base = Join-Path $env:LOCALAPPDATA "Sleepy Proton Drive"
+          $lnk = Join-Path ([Environment]::GetFolderPath("Programs")) "Sleepy Proton Drive.lnk"
+
+          powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Yes -NoDeps -NoLaunch -DesktopShortcut -Python $py
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed ($LASTEXITCODE)" }
+          if (-not (Test-Path $lnk)) { throw "Start menu shortcut missing" }
+          $sc = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+          Write-Host "Shortcut: $($sc.TargetPath) $($sc.Arguments) icon=$($sc.IconLocation)"
+          if (-not (Test-Path $sc.TargetPath)) { throw "Shortcut target missing" }
+
+          $v = & "$base\bin\sleepy-proton-sync.cmd" --version
+          Write-Host "Installed: $v"
+          if ("$v" -notmatch "^sleepy-proton-sync \d") { throw "command shim doesn't work" }
+          & "$base\bin\sleepy-proton-photos.cmd" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "photos shim doesn't work" }
+          & "$base\venv\Scripts\python.exe" -c "import PySide6.QtWidgets, sleepy_proton.gui; print('app imports OK')"
+          if ($LASTEXITCODE -ne 0) { throw "app doesn't import in its environment" }
+          & "$base\bin\sleepy-proton-check.cmd"
+          $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          if (($userPath -split ";") -notcontains "$base\bin") { throw "bin folder not on PATH" }
+
+          # A background timer survives a reinstall.
+          & "$base\bin\sleepy-proton-sync.cmd" --enable-timer 2h
+          powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Yes -NoDeps -NoLaunch -Python $py
+          if ($LASTEXITCODE -ne 0) { throw "reinstall failed" }
+          $t = & "$base\bin\sleepy-proton-sync.cmd" --timer-status
+          Write-Host "Timer after reinstall: $t"
+          if ("$t" -ne "active 2h") { throw "timer lost on reinstall" }
+
+          # The app window opens from the installed copy (offscreen) and stays up.
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $p = Start-Process -FilePath "$base\venv\Scripts\python.exe" -ArgumentList "-m", "sleepy_proton", "gui" -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { throw "app window closed straight away (exit $($p.ExitCode))" }
+          Stop-Process -Id $p.Id -Force
+
+          powershell -NoProfile -ExecutionPolicy Bypass -File uninstall.ps1 -Yes -Purge
+          if ($LASTEXITCODE -ne 0) { throw "uninstall.ps1 failed" }
+          if (Test-Path $lnk) { throw "shortcut left behind" }
+          if (Test-Path $base) { throw "$base left behind" }
+          $ErrorActionPreference = "Continue"
+          schtasks.exe /Query /TN "Sleepy Proton Drive Sync" 2>&1 | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw "scheduled task left behind" }
+          Write-Host "Installer round trip OK"

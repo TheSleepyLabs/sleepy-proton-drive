@@ -73,7 +73,10 @@ if [[ -f "$DESKTOP_DIR/Proton-Drive-Sync.desktop" ]] && grep -q "sleepy-proton-g
 fi
 command -v update-desktop-database &>/dev/null && update-desktop-database "$DATA_HOME/applications" &>/dev/null || true
 
-# 4. Optional: settings and data
+# 4. Program files (the private GUI Python environment is kept unless --purge)
+rm -rf "$DATA_HOME/sleepy-proton-drive/app"
+
+# 5. Optional: settings and data
 if [[ "$PURGE" == "true" ]]; then
     rm -f "$CONFIG_HOME/proton-sync.conf" "$CONFIG_HOME/proton-sync.conf.bak" \
           "$DATA_HOME/proton-sync.log"

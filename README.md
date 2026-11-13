@@ -31,7 +31,7 @@ two-way modes, and Proton Photos download) on all your computers. It's built on
 - **Proton Photos download**: save the photos from your phone (or uploaded by hand) to this
   computer, sorted into `Year/Month` folders, with the same three modes. Pick categories
   (videos, RAW, screenshots…) and years/months. See [Proton Photos](#proton-photos).
-- **Dashboard**: Sync Now, Dry-Run, Stop, live log, folder manager, speed limits and skip rules.
+- **Dashboard**: Sync now, Preview, Stop, live log, folder manager, speed limits and skip rules (header, sidebar and one page at a time: nothing ever needs scrolling).
 
 > [!NOTE]
 > Sleepy Proton Drive is an independent open-source project. It is **not made by or affiliated
@@ -88,7 +88,7 @@ Everything lives in `%LOCALAPPDATA%\Sleepy Proton Drive` (settings in
 terminal too (`sleepy-proton-sync --status`, …). Add `-DesktopShortcut` to put a shortcut on
 the Desktop: `install.cmd -DesktopShortcut`.
 
-Tip: click **🔍 Dry-Run Preview** (or run `sleepy-proton-sync --dry-run`) before the first real
+Tip: click **Preview** on the Overview page (or run `sleepy-proton-sync --dry-run`) before the first real
 sync to see exactly what will happen.
 
 ## Requirements
@@ -101,7 +101,7 @@ sync to see exactly what will happen.
 | PySide6 | Only for the app | Linux: installed from your distro, or into a private folder (`~/.local/share/sleepy-proton-drive/venv`) if your distro doesn't package it; the terminal tools work without it. Windows: always installed into the app's own folder. |
 | Bash 4.4+ | Linux terminal wizard and checker | Included in every current distro. |
 | systemd (user session) | Only for background sync on Linux | Without it, sync by hand or from cron. Windows uses Task Scheduler. |
-| Proton's [`proton-drive`](https://proton.me/drive/download) tool | Only for Proton Photos | One click in the app's 📷 Photos tab (or `sleepy-proton-photos --install-cli`) downloads Proton's official tool (to `~/.local/bin`, or the app's `bin` folder on Windows) and checks it against a known SHA-512 checksum. |
+| Proton's [`proton-drive`](https://proton.me/drive/download) tool | Only for Proton Photos | One click in the app's Photos page (or `sleepy-proton-photos --install-cli`) downloads Proton's official tool (to `~/.local/bin`, or the app's `bin` folder on Windows) and checks it against a known SHA-512 checksum. |
 | `notify-send`, `xdg-open` | Optional, Linux | Desktop notifications and "open folder" buttons. Windows has both built in. |
 
 Check everything at any time with `sleepy-proton-check` (or `./check-requirements.sh`), and add
@@ -121,7 +121,7 @@ can't wipe your backup.
 
 ## Proton Photos
 
-The **📷 Photos** tab downloads your Proton Photos library (from the Proton Drive phone app,
+The **Photos** page downloads your Proton Photos library (from the Proton Drive phone app,
 or uploaded at [drive.proton.me/photos](https://drive.proton.me/photos)) to this computer.
 It uses Proton's own official `proton-drive` command-line tool, because rclone can't see
 Photos.
@@ -225,15 +225,15 @@ files are skipped, and symlinks are not followed.
 
 | Problem | Fix |
 |---|---|
-| **"Not logged in" / login stopped working** | Proton sessions can expire. Run the wizard again (app: ⚙ Account Wizard). |
+| **"Not logged in" / login stopped working** | Proton sessions can expire. Run the wizard again (app: Setup wizard, in the sidebar). |
 | **2FA code rejected** | Codes change every 30 seconds. Type a fresh one just before clicking Log In. |
 | **Login fails with a captcha or "human verification" error** | Log in once at [drive.proton.me](https://drive.proton.me) in your browser, wait a few minutes, then try again. |
 | **`command not found: sleepy-proton-gui`** | `~/.local/bin` isn't in your PATH. Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc`, then open a new terminal. |
 | **The app doesn't open** | Run `sleepy-proton-gui` in a terminal to see why. Usually PySide6 is missing: run `sleepy-proton-check --fix`. |
 | **bisync says it needs `--resync`** | rclone stopped to protect your files. Check the log, then delete the marker it names (in `~/.local/state/sleepy-proton-drive/bisync/`) and sync again. |
-| **Photos: "You need to login first"** | Click **Sign In** in the 📷 Photos tab (or run `proton-drive auth login`). |
+| **Photos: "You need to login first"** | Click **Sign in** on the Photos page (or run `proton-drive auth login`). |
 | **Photos: "SAFETY STOP"** | A run wanted to delete a lot of photos at once. Check the Photos folder is there, then either fix it or run `sleepy-proton-photos --allow-mass-delete` once. |
-| **Anything else** | Check the log (app: 📜 Live Logs, or `~/.local/share/proton-sync.log`) and `sleepy-proton-check`. Still stuck? [Open an issue](https://github.com/TheSleepyLabs/sleepy-proton-drive/issues). |
+| **Anything else** | Check the log (app: the Log page, or `~/.local/share/proton-sync.log`) and `sleepy-proton-check`. Still stuck? [Open an issue](https://github.com/TheSleepyLabs/sleepy-proton-drive/issues). |
 
 ## Privacy & security
 

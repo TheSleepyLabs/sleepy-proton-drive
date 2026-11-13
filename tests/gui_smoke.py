@@ -63,13 +63,14 @@ def main():
                         'SYNC_MODE="copy"\nNOTIFY=false\n', encoding="utf-8")
 
     from sleepy_proton import gui as g
-    from PySide6.QtWidgets import QApplication, QMessageBox, QDialog
+    from PySide6.QtWidgets import QApplication, QMessageBox, QDialog, QScrollArea
     answers = []
+    reply = {"question": QMessageBox.Yes}     # what the next Yes/No question gets (nothing may block)
 
     def auto(kind):
         def f(*a, **k):
-            answers.append((kind, a[1] if len(a) > 1 else ""))
-            return QMessageBox.Yes
+            answers.append((kind, a[1:3] if len(a) > 1 else ""))
+            return reply["question"] if kind == "question" else QMessageBox.Yes
         return staticmethod(f)
     for kind in ("question", "information", "warning", "critical"):
         setattr(QMessageBox, kind, auto(kind))
@@ -96,13 +97,18 @@ def main():
           f"{w.config.device_name} {w.config.sync_dirs}")
     check("no warnings on start", not [a for a in answers if a[0] in ("warning", "critical")], repr(answers))
     shots = sys.argv[sys.argv.index("--shots") + 1] if "--shots" in sys.argv else None
-    for i in range(w.tabs.count()):
-        w.tabs.setCurrentIndex(i)
+    pages = ["Overview", "Folders", "Photos", "Settings", "Log"]
+    check("sidebar has every page", w.stack.count() == len(pages), str(w.stack.count()))
+    for i in range(w.stack.count()):
+        w.go(i)
         spin(lambda: False, 0.3)
+        # no page-level scroll area anywhere: only lists and logs scroll, inside themselves
+        check(f"{pages[i]} page has no scroll area", not w.stack.widget(i).findChildren(QScrollArea))
         if shots:
             Path(shots).mkdir(parents=True, exist_ok=True)
-            w.grab().save(str(Path(shots) / f"tab{i}.png"))
-    ok(f"all {w.tabs.count()} tabs open")
+            w.grab().save(str(Path(shots) / f"page{i}.png"))
+    w.go(0)
+    ok(f"all {w.stack.count()} pages open")
     w.resize(w.minimumSize())
     spin(lambda: False, 0.3)
     ok(f"smallest window size works ({w.minimumSize().width()}x{w.minimumSize().height()})")
@@ -159,6 +165,149 @@ def main():
         check("System Check runs", "system check" in w.overview_log_view.toPlainText(),
               w.overview_log_view.toPlainText()[-2000:])
 
+    # ---- header Stop button stops exactly the job the strip shows
+    stopped = []
+    w.cancel_sync_process = lambda: stopped.append("sync")
+    w.stop_photos = lambda: stopped.append("photos")
+    w.go(w.PAGE_FOLDERS)
+    w.sync_state = lambda: ("Syncing", "x", True)
+    w.photos_busy = lambda: True
+    w.update_progress()
+    check("strip shows the sync first", w._strip_job == "sync", str(w._strip_job))
+    w.stop_current()
+    check("header Stop stops the sync, not Photos", stopped == ["sync"], str(stopped))
+    del w.sync_state
+    stopped.clear()
+    w.update_progress()
+    check("strip shows Photos when only Photos runs", w._strip_job == "photos", str(w._strip_job))
+    w.stop_current()
+    check("header Stop stops Photos, not the sync", stopped == ["photos"], str(stopped))
+    del w.photos_busy
+    stopped.clear()
+    w.diag_busy = lambda: True
+    w.update_progress()
+    check("strip shows the system check (no Stop)", w._strip_job == "diag" and w.strip.stop.isHidden(),
+          str(w._strip_job))
+    w.stop_current()
+    check("header Stop does nothing for the system check", stopped == [], str(stopped))
+    del w.diag_busy
+    w.update_progress()
+    check("strip is empty when nothing runs", w._strip_job is None)
+    del w.cancel_sync_process, w.stop_photos
+
+    # ---- the timer combo keeps an unsaved pick across the 30 s poll
+    real_timer_status = g.timer_status
+    g.timer_status = lambda: (False, "30min")
+    w._shown_interval = None
+    w.update_timer_status()
+    check("timer combo follows the real timer", w.combo_timer_int.currentText() == "30min")
+    w.combo_timer_int.setCurrentText("2h")
+    w.update_timer_status()
+    w.update_timer_status()
+    check("unsaved timer pick survives the poll", w.combo_timer_int.currentText() == "2h",
+          w.combo_timer_int.currentText())
+    g.timer_status = lambda: (True, "1h")
+    w.update_timer_status()
+    check("timer combo follows a real change", w.combo_timer_int.currentText() == "1h")
+    g.timer_status = real_timer_status
+    w.update_timer_status()
+
+    # ---- Skip list edits stay on screen until Settings is saved
+    w.go(w.PAGE_SETTINGS)
+    check("settings start clean", not w.settings_dirty() and w.saved_lbl.text() != "Unsaved changes",
+          w.saved_lbl.text())
+    base = list(w.config.excludes)
+    g.QInputDialog.getText = staticmethod(lambda *a, **k: ("*.zzz", True))
+    w.add_exclusion_pattern()
+    check("added pattern shows in the list", "*.zzz" in w.skip_patterns())
+    check("added pattern is not in the config yet", w.config.excludes == base, str(w.config.excludes))
+    check("Skip edit marks settings unsaved", w.settings_dirty() and w.saved_lbl.text() == "Unsaved changes",
+          w.saved_lbl.text())
+    check("another save does not write the pattern", w.save_config_or_warn()
+          and "*.zzz" not in g.ConfigManager(cfg_path).excludes)
+    w.undo_settings()
+    check("undo drops the pattern and the unsaved mark",
+          "*.zzz" not in w.skip_patterns() and not w.settings_dirty() and w.saved_lbl.text() != "Unsaved changes",
+          w.saved_lbl.text())
+    if w.list_excludes.count():
+        w.list_excludes.item(0).setSelected(True)
+        gone = w.list_excludes.item(0).text()
+        w.remove_exclusion_pattern()
+        check("removed pattern leaves the config alone until saved",
+              gone not in w.skip_patterns() and w.config.excludes == base and w.settings_dirty())
+        w.undo_settings()
+    w.restore_preset_excludes()
+    check("Restore recommended changes only the list", w.config.excludes == base)
+    w.add_exclusion_pattern()
+    check("Save writes the Skip list", w.save_settings(show_popup=False)
+          and "*.zzz" in g.ConfigManager(cfg_path).excludes and w.config.excludes == w.skip_patterns()
+          and not w.settings_dirty(), str(g.ConfigManager(cfg_path).excludes))
+
+    # ---- unsaved-changes tracking
+    w.spin_transfers.setValue(w.spin_transfers.value() + 1)
+    check("changing a setting marks it unsaved", w.settings_dirty() and w.saved_lbl.text() == "Unsaved changes")
+    w.undo_settings()
+    check("undo clears the unsaved mark", not w.settings_dirty())
+    w.chk_photos_enabled.setChecked(not w.chk_photos_enabled.isChecked())
+    photos_unsaved = w.chk_photos_enabled.isChecked()
+    w.undo_settings()
+    check("undo on Settings keeps unsaved Photos edits", w.chk_photos_enabled.isChecked() == photos_unsaved)
+    w.chk_photos_enabled.setChecked(not photos_unsaved)
+    saved_transfers = g.ConfigManager(cfg_path).transfers
+    w.spin_transfers.setValue(saved_transfers + 2)
+    reply["question"] = QMessageBox.No
+    n = len(answers)
+    w.run_sync_process(dry_run=True)
+    check("Sync asks about unsaved settings and No cancels",
+          any("didn't save" in str(a[1]) for a in answers[n:]) and not w.own_sync_running()
+          and g.ConfigManager(cfg_path).transfers == saved_transfers and w.settings_dirty(), repr(answers[n:]))
+    w.restart_sync_process()
+    check("Restart asks too and No cancels", w._ctl_proc is None and g.ConfigManager(cfg_path).transfers
+          == saved_transfers)
+    w.close()
+    check("closing with unsaved changes asks, No keeps the window", w.isVisible())
+    reply["question"] = QMessageBox.Yes
+    w.run_sync_process(dry_run=True)
+    check("Yes saves the settings and starts the sync",
+          g.ConfigManager(cfg_path).transfers == saved_transfers + 2 and w.own_sync_running() and not w.settings_dirty())
+    spin(lambda: not w.own_sync_running(), 120)
+    w.spin_transfers.setValue(saved_transfers)
+    w.save_settings(show_popup=False)
+    check("Save clears the unsaved mark", not w.settings_dirty() and w.saved_lbl.text() != "Unsaved changes")
+
+    # ---- Photos date filter: saving unchanged gives the same dates, with and without the counts
+    w.go(w.PAGE_PHOTOS)
+    real_index = g.PHOTOS_INDEX
+    saved_dates = ["2025", "2026-03"]
+    for label, index in (("without counts", None),
+                         ("with counts", {"months": {"2025-01": 1, "2025-02": 2, "2026-03": 3, "2026-04": 1}})):
+        if index is None:
+            g.PHOTOS_INDEX = T / "no-such-index.json"
+        else:
+            g.PHOTOS_INDEX = T / "index.json"
+            g.PHOTOS_INDEX.write_text(__import__("json").dumps(index))
+        w.config.photos_dates = list(saved_dates)
+        w.load_photo_filters()
+        check(f"date filter reads back unchanged ({label})", w.selected_dates() == saved_dates,
+              str(w.selected_dates()))
+        check(f"saving the Photos page changes no dates ({label})",
+              w.save_photo_settings(show_popup=False) and g.ConfigManager(cfg_path).photos_dates == saved_dates
+              and cfg_path.read_text(encoding="utf-8").count('PHOTOS_DATES=("2025" "2026-03")') == 1,
+              cfg_path.read_text(encoding="utf-8"))
+    # with the counts, ticking every month of a year means the whole year
+    ti = w.tree_dates
+    y26 = next(ti.topLevelItem(i) for i in range(ti.topLevelItemCount())
+               if ti.topLevelItem(i).data(0, g.Qt.UserRole) == "2026")
+    y26.setCheckState(0, g.Qt.Checked)
+    check("every known month ticked saves the whole year", w.selected_dates() == ["2025", "2026"],
+          str(w.selected_dates()))
+    g.PHOTOS_INDEX = real_index
+    w.config.photos_dates = []
+    w.load_photo_filters()
+    w.save_photo_settings(show_popup=False)
+    w.go(w.PAGE_OVERVIEW)
+
+    reply["question"] = QMessageBox.Yes
     w.close()
     print(f"All {passed} GUI checks passed.")
 

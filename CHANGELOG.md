@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic tests on Windows (GitHub's `windows-latest`) and on Python 3.10 and 3.13.
 
 ### Changed
+- **New one-screen app window.** A sidebar (Overview, Folders, Photos, Settings, Log) shows one
+  page at a time, with tabs inside pages, so nothing needs scrolling. Settings has Undo and Save
+  at the bottom and marks unsaved changes; Sync now and closing the window ask before using or
+  dropping unsaved settings. Matches the look of Sleepy Backup.
 - The sync engine is now Python (`sleepy_proton` package) instead of Bash, so Linux and Windows
   share one codebase. Commands, options, messages, settings file and saved two-way state are
   unchanged, so an existing setup keeps working after `./install.sh`.
@@ -27,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   syncing (not only for the app).
 
 ### Fixed
+- Photos date filter: saving no longer widens a single picked month to its whole year.
 - Two-way Photos: a photo you deleted on this computer no longer shows a "no details" warning
   (it was being looked up again right after it went to Proton's trash).
 

@@ -67,6 +67,14 @@ from .config import DEFAULT_EXCLUDES  # noqa: E402
 from .osutil import (DEFAULT_CONFIG, DEFAULT_LOG, DEFAULT_PHOTOS_DIR, HOME, CACHE_DIR, find_exe,  # noqa: E402
                      hostname, kill_tree, module_cmd, open_path as os_open_path, run_quiet, same_path)
 
+# The window runs our tools as child processes (`python -m sleepy_proton sync --stop`, Photos, the
+# system check...). They inherit this environment, so it must say where the sleepy_proton package is.
+# The re-exec above sets it, but when PySide6 comes from the system Python there's no re-exec, and
+# without this every Stop/Restart/Sync now/Photos button failed with "No module named sleepy_proton".
+_pp = os.environ.get("PYTHONPATH", "")
+if str(PACKAGE_PARENT) not in _pp.split(os.pathsep):
+    os.environ["PYTHONPATH"] = str(PACKAGE_PARENT) + (os.pathsep + _pp if _pp else "")
+
 
 APP_NAME = "Sleepy Proton Drive"
 MIN_W, MIN_H = 860, 560          # the smallest the window can be: every page fits in this

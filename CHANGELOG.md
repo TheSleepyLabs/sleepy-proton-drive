@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   syncing (not only for the app).
 
 ### Fixed
+- The app window's Stop, Restart, Sync now and Photos buttons failed with "No module named
+  sleepy_proton" when PySide6 came from the system Python (no private environment needed).
 - Photos date filter: saving no longer widens a single picked month to its whole year.
 - Two-way Photos: a photo you deleted on this computer no longer shows a "no details" warning
   (it was being looked up again right after it went to Proton's trash).

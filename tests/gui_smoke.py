@@ -26,6 +26,7 @@ os.environ.update({
 })
 os.environ.pop("PROTON_SYNC_CONFIG", None)
 os.environ.pop("SLEEPY_PROTON_SYNC_BIN", None)
+os.environ.pop("PYTHONPATH", None)   # like a real start: the window itself must make its tools findable
 for d in (H / "Documents", H / "Pictures", T / "cloud", T / "run", T / "fakeproton"):
     d.mkdir(parents=True, exist_ok=True)
 (H / "Documents" / "hello.txt").write_text("hi")
@@ -96,6 +97,12 @@ def main():
           w.config.device_name == "GuiBox" and [Path(d) for d in w.config.sync_dirs] == [H / "Documents"],
           f"{w.config.device_name} {w.config.sync_dirs}")
     check("no warnings on start", not [a for a in answers if a[0] in ("warning", "critical")], repr(answers))
+    # Stop/Restart/Sync now/Photos run `python -m sleepy_proton ...`: it must work from any folder,
+    # not only from the source folder (that's where the tests run, which hid this bug in v2.0.0).
+    prog, targs = g.tool("sync", "--config", str(cfg_path), "--running")
+    r = subprocess.run([prog, *targs], cwd=str(T), capture_output=True, text=True)
+    check("the window's tools start from any folder (Stop/Restart work)",
+          r.returncode == 0 and "No module" not in r.stderr, r.stdout + r.stderr)
     shots = sys.argv[sys.argv.index("--shots") + 1] if "--shots" in sys.argv else None
     pages = ["Overview", "Folders", "Photos", "Settings", "Log"]
     check("sidebar has every page", w.stack.count() == len(pages), str(w.stack.count()))
